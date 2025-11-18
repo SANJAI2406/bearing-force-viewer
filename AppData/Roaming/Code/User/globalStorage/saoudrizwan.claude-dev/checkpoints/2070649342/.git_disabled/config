@@ -1,0 +1,13 @@
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+	worktree = c:\\Users\\sanja
+[commit]
+	gpgSign = false
+[user]
+	name = Cline Checkpoint
+	email = checkpoint@cline.bot
