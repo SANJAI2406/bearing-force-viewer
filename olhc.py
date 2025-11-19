@@ -5571,8 +5571,9 @@ class RNNTab(ctk.CTkFrame):
         )
         self.mode_dropdown.pack(side="left", padx=5)
 
-        # Model type selector (for Dynamic mode)
-        ctk.CTkLabel(mode_frame, text="Model:").pack(side="left", padx=(10, 5))
+        # Model type selector (for Dynamic mode only)
+        self.model_type_label = ctk.CTkLabel(mode_frame, text="Model:")
+        self.model_type_label.pack(side="left", padx=(10, 5))
         self.model_type_var = ctk.StringVar(value="XGBoost")
         self.model_type_dropdown = ctk.CTkOptionMenu(
             mode_frame, variable=self.model_type_var,
@@ -5580,6 +5581,10 @@ class RNNTab(ctk.CTkFrame):
             width=100
         )
         self.model_type_dropdown.pack(side="left", padx=5)
+
+        # Hide by default (Scalar mode is default)
+        self.model_type_label.pack_forget()
+        self.model_type_dropdown.pack_forget()
 
         self.mode_info_label = ctk.CTkLabel(
             mode_frame, text="Static prediction", text_color="gray"
@@ -5639,6 +5644,17 @@ class RNNTab(ctk.CTkFrame):
         self.hide_all_btn = ctk.CTkButton(self.filter_bar, text="Hide All", width=80,
                                           command=lambda: self._set_all_visible(False))
         self.hide_all_btn.grid(row=0, column=3, padx=4)
+
+        # Set All Models dropdown
+        ctk.CTkLabel(self.filter_bar, text="Set All:").grid(row=0, column=4, padx=(10, 2))
+        self.set_all_models_dropdown = ctk.CTkOptionMenu(
+            self.filter_bar,
+            values=["GBR", "OptimizedSVR", "SVR", "RF", "MLP"],
+            command=self._set_all_models,
+            width=100
+        )
+        self.set_all_models_dropdown.grid(row=0, column=5, padx=4)
+        self.set_all_models_dropdown.set("GBR")
         # --- END OF FIX ---
 
         self.channel_frame_outer = ctk.CTkFrame(left_parent)
@@ -7918,6 +7934,16 @@ class RNNTab(ctk.CTkFrame):
         except Exception:
             pass
 
+    def _set_all_models(self, model_type):
+        """Set all channel models to the same type"""
+        for ch, w in list(self.channel_widgets.items()):
+            try:
+                if 'model_choice' in w:
+                    w['model_choice'].set(model_type)
+            except Exception:
+                pass
+        print(f"Set all models to: {model_type}")
+
     # ---
     # --- NEW METHODS (from IMPLEMENTATION_GUIDE.md) ---
     # ---
@@ -7929,6 +7955,10 @@ class RNNTab(ctk.CTkFrame):
         """
         if choice == "Scalar":
             self.mode_info_label.configure(text="Static single-value prediction")
+
+            # Hide Model dropdown (only for Dynamic mode)
+            self.model_type_label.pack_forget()
+            self.model_type_dropdown.pack_forget()
 
             # 1. Restore buttons
             self.recompute_graphics_button.configure(
@@ -7981,6 +8011,10 @@ class RNNTab(ctk.CTkFrame):
 
         elif choice == "Dynamic":
             self.mode_info_label.configure(text="Frequency response prediction")
+
+            # Show Model dropdown (for Dynamic mode)
+            self.model_type_label.pack(side="left", padx=(10, 5))
+            self.model_type_dropdown.pack(side="left", padx=5)
 
             # 1. Update buttons for dynamic mode
             self.recompute_graphics_button.configure(
