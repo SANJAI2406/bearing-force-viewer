@@ -25,6 +25,7 @@ from ENHANCED_DYNAMIC_RNN import (
     DynamicModelTrainer,
     DynamicVisualization
 )
+from AVL_Cameo_Wrapper import HybridModelManager, AVLCameoModelWrapper
 from sklearn.model_selection import train_test_split # May be needed
 from sklearn.cluster import KMeans
 from sklearn.linear_model import Ridge, LogisticRegression
@@ -4041,8 +4042,15 @@ class DesignTab(ctk.CTkFrame):
 
             # Run prediction
             try:
-                # Use the RNNTab's safe_predict method
-                predicted_values = rnn_tab.safe_predict(model, final_model_input, feature_cols=required_features_list)
+                # Check if using Cameo model
+                if rnn_tab.using_cameo and model == "CAMEO_MODEL":
+                    # Use Cameo wrapper for prediction
+                    X_pred = final_model_input.values
+                    predicted_values = rnn_tab.hybrid_manager.predict(X_pred, output_name)
+                else:
+                    # Use the RNNTab's safe_predict method for custom models
+                    predicted_values = rnn_tab.safe_predict(model, final_model_input, feature_cols=required_features_list)
+
                 # Add to our results dict with a 'pred_' prefix
                 all_predicted_outputs[f"pred_{output_name}"] = predicted_values
             except Exception as e:
@@ -5502,6 +5510,12 @@ class RNNTab(ctk.CTkFrame):
         self.dynamic_metadata = None
         # === END DYNAMIC MODE ATTRIBUTES ===
 
+        # === AVL CAMEO INTEGRATION ===
+        self.hybrid_manager = HybridModelManager()
+        self.using_cameo = False
+        self.cameo_model_loaded = False
+        # === END AVL CAMEO INTEGRATION ===
+
         # --- interaction state ---
         self._ref_inputs = {}
         self._ref_outputs = {}
@@ -5597,6 +5611,15 @@ class RNNTab(ctk.CTkFrame):
 
         self.import_button = ctk.CTkButton(raw_data_bar, text="Import Data...", command=self.load_rnn_data)
         self.import_button.pack(side="left", padx=6, pady=4)
+
+        # AVL Cameo button
+        self.load_cameo_button = ctk.CTkButton(
+            raw_data_bar, text="Load Cameo Model",
+            command=self.load_cameo_model,
+            fg_color="#2E7D32", hover_color="#388E3C"
+        )
+        self.load_cameo_button.pack(side="left", padx=6, pady=4)
+
         self.data_status_label = ctk.CTkLabel(raw_data_bar, text="No data loaded.", text_color="gray", anchor="w")
         self.data_status_label.pack(side="left", fill="x", expand=True, padx=(8, 6))
 
@@ -8356,10 +8379,112 @@ class RNNTab(ctk.CTkFrame):
             traceback.print_exc()
             self.prediction_mode.set("Scalar")  # Revert
 
+    def load_cameo_model(self):
+        """Load AVL Cameo pre-trained model"""
+        try:
+            # Check if Cameo is available
+            if not self.hybrid_manager.cameo_wrapper.is_available:
+                messagebox.showerror(
+                    "Cameo Not Available",
+                    "AVL Cameo model DLL not found.\n\n"
+                    "Make sure the following files are in D:\\Python\\OLHC\\AVL_Cameo_model\\:\n"
+                    "- Variant.py\n"
+                    "- Variant_x64.dll (or Variant_x86.dll)\n\n"
+                    "This feature only works on systems where the AVL Cameo DLL is accessible."
+                )
+                return
+
+            # Initialize Cameo model with its predefined inputs/outputs
+            cameo_inputs = AVLCameoModelWrapper.CAMEO_INPUTS
+            cameo_outputs = AVLCameoModelWrapper.CAMEO_OUTPUTS
+
+            # Set up the channels
+            self.input_channels = cameo_inputs.copy()
+            self.output_channels = cameo_outputs.copy()
+
+            # Initialize hybrid manager
+            self.hybrid_manager.initialize(
+                input_names=self.input_channels,
+                output_names=self.output_channels,
+                force_custom=False  # Use Cameo if available
+            )
+
+            # Create sample data for the RNN tab sliders (using median of typical ranges)
+            # These are reasonable defaults for gear design parameters
+            default_values = {
+                'B1_offset': 115.5,
+                'B2_offset': 21.1,
+                'B3_offset': -196.0,
+                'B4_offset': 133.5,
+                'B5_offset': 7.5,
+                'Helix_Angle': 20.0,
+                'Input_Stifness': 0.97,
+                'Lead_Crown_Pinion': 10.0,
+                'Lead_Slope_Pinion': 0.065,
+                'Pressure_Angle': 20.0
+            }
+
+            # Create a dummy DataFrame for compatibility
+            self.rnn_data = pd.DataFrame([default_values])
+
+            # Set bounds (typical ranges for gear parameters)
+            self.rnn_data_bounds = {
+                'B1_offset': (100, 130),
+                'B2_offset': (15, 30),
+                'B3_offset': (-210, -180),
+                'B4_offset': (120, 150),
+                'B5_offset': (0, 15),
+                'Helix_Angle': (15, 25),
+                'Input_Stifness': (0.5, 1.5),
+                'Lead_Crown_Pinion': (5, 15),
+                'Lead_Slope_Pinion': (0.04, 0.09),
+                'Pressure_Angle': (18, 22)
+            }
+
+            # Mark as using Cameo
+            self.using_cameo = True
+            self.cameo_model_loaded = True
+            self.rnn_data_type = "cameo"
+
+            # Populate channel list
+            self.populate_channel_list()
+            self._initialize_ref_inputs()
+
+            # Update UI
+            theme_props = self.app.get_theme_properties()
+            text_color = theme_props.get("text_color", "black")
+            self.data_status_label.configure(
+                text=f"✓ AVL Cameo Model Loaded ({len(cameo_outputs)} outputs)",
+                text_color="green"
+            )
+
+            self.build_model_button.configure(state="normal", text="Load Cameo Models")
+            self.save_session_button.configure(state="normal")
+            self.export_preset_button.configure(state="normal")
+
+            messagebox.showinfo(
+                "Cameo Model Loaded",
+                f"Successfully loaded AVL Cameo pre-trained model!\n\n"
+                f"Inputs: {len(cameo_inputs)} parameters\n"
+                f"Outputs: {len(cameo_outputs)} parameters\n\n"
+                f"Click 'Load Cameo Models' to activate all outputs."
+            )
+
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Failed to load Cameo model:\n{e}")
+            traceback.print_exc()
+            self.using_cameo = False
+            self.cameo_model_loaded = False
+
     def build_models(self):
         """Build models based on selected mode"""
-        if self.rnn_data is None:
+        if self.rnn_data is None and not self.using_cameo:
             messagebox.showerror("Error", "No data loaded.")
+            return
+
+        # Handle Cameo model loading
+        if self.using_cameo and self.cameo_model_loaded:
+            self._load_cameo_models()
             return
 
         mode = self.prediction_mode.get()
@@ -8643,6 +8768,53 @@ class RNNTab(ctk.CTkFrame):
             # Enable graphics button for dynamic mode, keep others disabled
             self.recompute_graphics_button.configure(state="normal")
             self.run_shap_button.configure(state="disabled")
+
+    def _load_cameo_models(self):
+        """Load all Cameo models (no training needed - pre-trained)"""
+        try:
+            self.build_model_button.configure(text="Loading Cameo...", state="disabled")
+            self.app.update_idletasks()
+
+            # Mark all outputs as trained (using Cameo)
+            for output_name in self.output_channels:
+                # Create a pseudo-model marker for Cameo
+                self.trained_models[output_name] = "CAMEO_MODEL"
+
+                # Update UI to show model is loaded
+                if output_name in self.channel_widgets:
+                    widgets = self.channel_widgets[output_name]
+                    # Set quality indicators to green (pre-trained model)
+                    widgets['quality'].configure(fg_color="green")
+                    widgets['fit'].configure(fg_color="green")
+
+            # Create stats display
+            stats_message = "AVL Cameo Models Loaded Successfully!\n\n"
+            stats_message += f"Inputs ({len(self.input_channels)}):\n"
+            for inp in self.input_channels[:5]:  # Show first 5
+                stats_message += f"  • {inp}\n"
+            if len(self.input_channels) > 5:
+                stats_message += f"  ... and {len(self.input_channels)-5} more\n"
+
+            stats_message += f"\nOutputs ({len(self.output_channels)}):\n"
+            for out in self.output_channels[:5]:  # Show first 5
+                stats_message += f"  • {out}\n"
+            if len(self.output_channels) > 5:
+                stats_message += f"  ... and {len(self.output_channels)-5} more\n"
+
+            stats_message += "\nAll models are pre-trained and ready for prediction!"
+
+            messagebox.showinfo("Cameo Models Loaded", stats_message)
+
+            # Enable UI elements
+            self.recompute_graphics_button.configure(state="normal")
+            self.run_shap_button.configure(state="disabled")  # SHAP not supported for Cameo
+
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Failed to load Cameo models:\n{e}")
+            traceback.print_exc()
+
+        finally:
+            self.build_model_button.configure(text="Load Cameo Models", state="normal")
 
     def _display_dynamic_results(self, stats, output_names):
         """Display dynamic modeling results"""
