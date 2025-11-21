@@ -8548,12 +8548,15 @@ class RNNTab(ctk.CTkFrame):
             self.save_session_button.configure(state="normal")
             self.export_preset_button.configure(state="normal")
 
+            # Automatically load all Cameo models (no second click needed)
+            self._load_cameo_models()
+
             messagebox.showinfo(
                 "Cameo Model Loaded",
                 f"Successfully loaded AVL Cameo pre-trained model!\n\n"
                 f"Inputs: {len(cameo_inputs)} parameters\n"
                 f"Outputs: {len(cameo_outputs)} parameters\n\n"
-                f"Click 'Load Cameo Models' to activate all outputs."
+                f"All models are now active and ready to use."
             )
 
         except Exception as e:
