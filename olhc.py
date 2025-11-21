@@ -5908,10 +5908,18 @@ class RNNTab(ctk.CTkFrame):
             col = i % num_cols
 
             var = tk.BooleanVar(value=True)  # Default checked
-            chk = ctk.CTkCheckBox(self.inputs_frame, text=name, variable=var, width=120)
+            chk = ctk.CTkCheckBox(
+                self.inputs_frame, text=name, variable=var, width=120,
+                command=self._on_input_checkbox_change  # Auto-refresh graphics
+            )
             chk.grid(row=row, column=col, padx=5, pady=2, sticky="w")
 
             self.input_checkboxes[name] = var
+
+    def _on_input_checkbox_change(self):
+        """Called when input checkbox is toggled - refresh graphics"""
+        if hasattr(self, 'trained_models') and self.trained_models:
+            self.recompute_graphics()
 
     def populate_channel_list(self):
         # Also populate input checkboxes
