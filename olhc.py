@@ -25,7 +25,18 @@ from ENHANCED_DYNAMIC_RNN import (
     DynamicModelTrainer,
     DynamicVisualization
 )
-from AVL_Cameo_Wrapper import HybridModelManager, AVLCameoModelWrapper
+# AVL Cameo import - optional, only if available
+try:
+    import sys
+    cameo_path = r"D:\Python\OLHC\AVL_Cameo_model"
+    if os.path.exists(cameo_path) and cameo_path not in sys.path:
+        sys.path.insert(0, cameo_path)
+    import Variant
+    CAMEO_AVAILABLE = True
+except:
+    CAMEO_AVAILABLE = False
+    Variant = None
+
 from sklearn.model_selection import train_test_split # May be needed
 from sklearn.cluster import KMeans
 from sklearn.linear_model import Ridge, LogisticRegression
@@ -4044,9 +4055,29 @@ class DesignTab(ctk.CTkFrame):
             try:
                 # Check if using Cameo model
                 if rnn_tab.using_cameo and model == "CAMEO_MODEL":
-                    # Use Cameo wrapper for prediction
-                    X_pred = final_model_input.values
-                    predicted_values = rnn_tab.hybrid_manager.predict(X_pred, output_name)
+                    # Use Cameo model for prediction (direct call to Variant functions)
+                    cameo_func = rnn_tab.cameo_models.get(output_name)
+                    if cameo_func is None:
+                        raise ValueError(f"No Cameo function found for output: {output_name}")
+
+                    # Call Cameo function for each row
+                    predicted_values = []
+                    for idx, row in final_model_input.iterrows():
+                        result = cameo_func(
+                            B1_offset=float(row['B1_offset']),
+                            B2_offset=float(row['B2_offset']),
+                            B3_offset=float(row['B3_offset']),
+                            B4_offset=float(row['B4_offset']),
+                            B5_offset=float(row['B5_offset']),
+                            Helix_Angle=float(row['Helix_Angle']),
+                            Input_Stifness=float(row['Input_Stifness']),
+                            Lead_Crown_Pinion=float(row['Lead_Crown_Pinion']),
+                            Lead_Slope_Pinion=float(row['Lead_Slope_Pinion']),
+                            Pressure_Angle=float(row['Pressure_Angle'])
+                        )
+                        # Variant functions return lists, extract first element
+                        predicted_values.append(result[0] if isinstance(result, list) else result)
+                    predicted_values = np.array(predicted_values)
                 else:
                     # Use the RNNTab's safe_predict method for custom models
                     predicted_values = rnn_tab.safe_predict(model, final_model_input, feature_cols=required_features_list)
@@ -5511,9 +5542,11 @@ class RNNTab(ctk.CTkFrame):
         # === END DYNAMIC MODE ATTRIBUTES ===
 
         # === AVL CAMEO INTEGRATION ===
-        self.hybrid_manager = HybridModelManager()
         self.using_cameo = False
         self.cameo_model_loaded = False
+        self.cameo_models = {}  # Store Cameo function references
+        self.cameo_input_names = []
+        self.cameo_output_names = []
         # === END AVL CAMEO INTEGRATION ===
 
         # --- interaction state ---
@@ -8383,7 +8416,7 @@ class RNNTab(ctk.CTkFrame):
         """Load AVL Cameo pre-trained model"""
         try:
             # Check if Cameo is available
-            if not self.hybrid_manager.cameo_wrapper.is_available:
+            if not CAMEO_AVAILABLE:
                 messagebox.showerror(
                     "Cameo Not Available",
                     "AVL Cameo model DLL not found.\n\n"
@@ -8394,20 +8427,46 @@ class RNNTab(ctk.CTkFrame):
                 )
                 return
 
-            # Initialize Cameo model with its predefined inputs/outputs
-            cameo_inputs = AVLCameoModelWrapper.CAMEO_INPUTS
-            cameo_outputs = AVLCameoModelWrapper.CAMEO_OUTPUTS
+            # Define Cameo inputs and outputs (get from Variant module)
+            cameo_inputs = ['B1_offset', 'B2_offset', 'B3_offset', 'B4_offset', 'B5_offset',
+                           'Helix_Angle', 'Input_Stifness', 'Lead_Crown_Pinion',
+                           'Lead_Slope_Pinion', 'Pressure_Angle']
+
+            cameo_outputs = ['Hull', 'B1_radialStiffnessX', 'B1_radialStiffnessY',
+                            'B2_radialStiffnessX', 'B2_radialStiffnessY',
+                            'B3_axialStiffness', 'B3_radialStiffnessX', 'B3_radialStiffnessY',
+                            'B4_radialStiffnessX', 'B4_radialStiffnessY',
+                            'B5_radialStiffnessX', 'B5_radialStiffnessY',
+                            'Fx', 'Fy', 'Fz', 'Linear_TE', 'Mx', 'My', 'Tilt_TE']
 
             # Set up the channels
             self.input_channels = cameo_inputs.copy()
             self.output_channels = cameo_outputs.copy()
+            self.cameo_input_names = cameo_inputs.copy()
+            self.cameo_output_names = cameo_outputs.copy()
 
-            # Initialize hybrid manager
-            self.hybrid_manager.initialize(
-                input_names=self.input_channels,
-                output_names=self.output_channels,
-                force_custom=False  # Use Cameo if available
-            )
+            # Map output names to Variant functions
+            self.cameo_models = {
+                'Hull': Variant.Hull_1,
+                'B1_radialStiffnessX': Variant.B1_radialStiffnessX_1,
+                'B1_radialStiffnessY': Variant.B1_radialStiffnessY_1,
+                'B2_radialStiffnessX': Variant.B2_radialStiffnessX_1,
+                'B2_radialStiffnessY': Variant.B2_radialStiffnessY_1,
+                'B3_axialStiffness': Variant.B3_axialStiffness_1,
+                'B3_radialStiffnessX': Variant.B3_radialStiffnessX_1,
+                'B3_radialStiffnessY': Variant.B3_radialStiffnessY_1,
+                'B4_radialStiffnessX': Variant.B4_radialStiffnessX_1,
+                'B4_radialStiffnessY': Variant.B4_radialStiffnessY_1,
+                'B5_radialStiffnessX': Variant.B5_radialStiffnessX_1,
+                'B5_radialStiffnessY': Variant.B5_radialStiffnessY_1,
+                'Fx': Variant.Fx_1,
+                'Fy': Variant.Fy_1,
+                'Fz': Variant.Fz_1,
+                'Linear_TE': Variant.Linear_TE_1,
+                'Mx': Variant.Mx_1,
+                'My': Variant.My_1,
+                'Tilt_TE': Variant.Tilt_TE_1
+            }
 
             # Create sample data for the RNN tab sliders (using median of typical ranges)
             # These are reasonable defaults for gear design parameters
