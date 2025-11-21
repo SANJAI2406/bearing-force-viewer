@@ -30,6 +30,47 @@ import sys
 import importlib.util
 Variant = None  # Will be loaded dynamically
 
+class CameoModelWrapper:
+    """Wrapper class to make AVL Cameo models compatible with sklearn-like interface"""
+    def __init__(self, variant_module, output_name, input_names):
+        self.variant = variant_module
+        self.output_name = output_name
+        self.input_names = input_names  # Ordered list of input parameter names
+
+    def predict(self, X):
+        """
+        Make predictions using Cameo model.
+        X can be a DataFrame or numpy array with columns matching input_names order.
+        """
+        import numpy as np
+
+        # Convert to numpy array if DataFrame
+        if hasattr(X, 'values'):
+            X_arr = X.values
+        else:
+            X_arr = np.asarray(X)
+
+        # Ensure 2D
+        if X_arr.ndim == 1:
+            X_arr = X_arr.reshape(1, -1)
+
+        n_samples = X_arr.shape[0]
+
+        # Prepare input list for Cameo (transpose: each input as a list of values)
+        # Cameo expects: [[val1_sample1, val1_sample2, ...], [val2_sample1, val2_sample2, ...], ...]
+        u = [X_arr[:, i].tolist() for i in range(X_arr.shape[1])]
+
+        try:
+            # Use Cameo evaluate function
+            result = self.variant.evaluate(1, self.output_name, u)
+            if result is not None:
+                return np.array(result)
+            else:
+                return np.full(n_samples, np.nan)
+        except Exception as e:
+            print(f"Cameo prediction error for {self.output_name}: {e}")
+            return np.full(n_samples, np.nan)
+
 from sklearn.model_selection import train_test_split # May be needed
 from sklearn.cluster import KMeans
 from sklearn.linear_model import Ridge, LogisticRegression
@@ -6313,14 +6354,36 @@ class RNNTab(ctk.CTkFrame):
         df = self.rnn_data.copy()
         for c in (self.input_channels + self.output_channels):
             df[c] = pd.to_numeric(df[c], errors='coerce')
+
+        # Use rnn_data_bounds if available (for Cameo models), otherwise calculate from data
+        use_bounds = hasattr(self, 'rnn_data_bounds') and self.rnn_data_bounds
+        input_minmax = {}
+        for c in self.input_channels:
+            if use_bounds and c in self.rnn_data_bounds:
+                input_minmax[c] = self.rnn_data_bounds[c]
+            else:
+                input_minmax[c] = (df[c].min(), df[c].max())
+
         perc_values = {}
         for c in self.input_channels:
-            vals = df[c].dropna().values
-            perc_values[c] = np.percentile(vals, list(percentiles)) if vals.size > 0 else [np.nan] * len(percentiles)
+            if use_bounds and c in self.rnn_data_bounds:
+                # For Cameo, calculate percentiles from bounds
+                mn, mx = self.rnn_data_bounds[c]
+                p20 = mn + 0.2 * (mx - mn)
+                p50 = mn + 0.5 * (mx - mn)
+                p80 = mn + 0.8 * (mx - mn)
+                perc_values[c] = [p20, p50, p80]
+            else:
+                vals = df[c].dropna().values
+                perc_values[c] = np.percentile(vals, list(percentiles)) if vals.size > 0 else [np.nan] * len(percentiles)
+
         self._ref_inputs.clear()
         for c in self.input_channels:
-            self._ref_inputs[c] = float(np.percentile(df[c].dropna(), 50)) if not df[c].dropna().empty else 0.0
-        input_minmax = {c: (df[c].min(), df[c].max()) for c in self.input_channels}
+            if use_bounds and c in self.rnn_data_bounds:
+                mn, mx = self.rnn_data_bounds[c]
+                self._ref_inputs[c] = (mn + mx) / 2  # Use midpoint
+            else:
+                self._ref_inputs[c] = float(np.percentile(df[c].dropna(), 50)) if not df[c].dropna().empty else 0.0
         valid_cells = []
         used_rows_indices = set()
         used_cols_indices = set()
@@ -8871,14 +8934,22 @@ class RNNTab(ctk.CTkFrame):
 
     def _load_cameo_models(self):
         """Load all Cameo models (no training needed - pre-trained)"""
+        global Variant
         try:
             self.build_model_button.configure(text="Loading Cameo...", state="disabled")
             self.app.update_idletasks()
 
-            # Mark all outputs as trained (using Cameo)
+            # Create wrapper models for each output using CameoModelWrapper
             for output_name in self.output_channels:
-                # Create a pseudo-model marker for Cameo
-                self.trained_models[output_name] = "CAMEO_MODEL"
+                # Create a wrapper that makes Cameo compatible with sklearn interface
+                wrapper = CameoModelWrapper(Variant, output_name, self.input_channels)
+
+                # Store in trained_models with same format as regular models
+                self.trained_models[output_name] = {
+                    'model': wrapper,
+                    'features': self.input_channels,
+                    'type': 'CAMEO'
+                }
 
                 # Update UI to show model is loaded
                 if output_name in self.channel_widgets:
