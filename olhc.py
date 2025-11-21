@@ -25,17 +25,10 @@ from ENHANCED_DYNAMIC_RNN import (
     DynamicModelTrainer,
     DynamicVisualization
 )
-# AVL Cameo import - optional, only if available
-try:
-    import sys
-    cameo_path = r"D:\Python\OLHC\AVL_Cameo_model"
-    if os.path.exists(cameo_path) and cameo_path not in sys.path:
-        sys.path.insert(0, cameo_path)
-    import Variant
-    CAMEO_AVAILABLE = True
-except:
-    CAMEO_AVAILABLE = False
-    Variant = None
+# AVL Cameo - loaded dynamically when user selects the file
+import sys
+import importlib.util
+Variant = None  # Will be loaded dynamically
 
 from sklearn.model_selection import train_test_split # May be needed
 from sklearn.cluster import KMeans
@@ -8413,18 +8406,52 @@ class RNNTab(ctk.CTkFrame):
             self.prediction_mode.set("Scalar")  # Revert
 
     def load_cameo_model(self):
-        """Load AVL Cameo pre-trained model"""
+        """Load AVL Cameo pre-trained model by letting user select the Python file"""
+        global Variant
+
         try:
-            # Check if Cameo is available
-            if not CAMEO_AVAILABLE:
+            # Let user select the Variant.py file
+            file_path = filedialog.askopenfilename(
+                title="Select AVL Cameo Python File (e.g., Variant.py)",
+                filetypes=[("Python files", "*.py"), ("All files", "*.*")],
+                initialdir=os.path.expanduser("~")
+            )
+
+            if not file_path:
+                return  # User cancelled
+
+            # Get the directory containing the selected file
+            cameo_dir = os.path.dirname(file_path)
+            module_name = os.path.splitext(os.path.basename(file_path))[0]
+
+            # Add the directory to sys.path if not already there
+            if cameo_dir not in sys.path:
+                sys.path.insert(0, cameo_dir)
+
+            # Dynamically load the module
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            if spec is None or spec.loader is None:
                 messagebox.showerror(
-                    "Cameo Not Available",
-                    "AVL Cameo model DLL not found.\n\n"
-                    "Make sure the following files are in D:\\Python\\OLHC\\AVL_Cameo_model\\:\n"
-                    "- Variant.py\n"
-                    "- Variant_x64.dll (or Variant_x86.dll)\n\n"
-                    "This feature only works on systems where the AVL Cameo DLL is accessible."
+                    "Load Error",
+                    f"Could not load module from:\n{file_path}\n\n"
+                    "Make sure the file is a valid Python module."
                 )
+                return
+
+            Variant = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = Variant
+            spec.loader.exec_module(Variant)
+
+            # Verify the module has the expected functions
+            required_functions = ['Hull_1', 'Fx_1', 'Fy_1', 'Fz_1']
+            missing_functions = [f for f in required_functions if not hasattr(Variant, f)]
+            if missing_functions:
+                messagebox.showerror(
+                    "Invalid Module",
+                    f"The selected file is missing required functions:\n{', '.join(missing_functions)}\n\n"
+                    "Please select a valid AVL Cameo Variant.py file."
+                )
+                Variant = None
                 return
 
             # Define Cameo inputs and outputs (get from Variant module)
