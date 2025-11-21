@@ -8597,8 +8597,11 @@ class RNNTab(ctk.CTkFrame):
                 'Pressure_Angle': 20.0
             }
 
-            # Create a dummy DataFrame for compatibility
+            # Create a dummy DataFrame for compatibility (include outputs with NaN)
             self.rnn_data = pd.DataFrame([default_values])
+            # Add output columns with NaN values (needed for graphics code compatibility)
+            for out_name in cameo_outputs:
+                self.rnn_data[out_name] = np.nan
 
             # Set bounds (typical ranges for gear parameters)
             self.rnn_data_bounds = {
