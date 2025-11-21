@@ -6332,9 +6332,12 @@ class RNNTab(ctk.CTkFrame):
 
     def recompute_graphics(self):
         try:
-            if self.rnn_data is None: return
+            if self.rnn_data is None:
+                print("DEBUG recompute_graphics: rnn_data is None")
+                return
             if "Interaction" in (
                     self.graphic_type_menu.get() if hasattr(self.graphic_type_menu, "get") else "Interaction"):
+                print("DEBUG recompute_graphics: calling build_interaction_graphics")
                 self.build_interaction_graphics(points=48, percentiles=(20, 50, 80), cell_w=2.0,
                                                 cell_h=1.8, show_scatter=self.show_scatter_var.get())
             else:
@@ -6342,11 +6345,17 @@ class RNNTab(ctk.CTkFrame):
                     self.canvas_modeling.draw()
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"DEBUG recompute_graphics error: {e}")
+            traceback.print_exc()
 
     def build_interaction_graphics(self, points=48, percentiles=(20, 50, 80), cell_w=1.9, cell_h=1.6,
                                    show_scatter=False):
+        print(f"DEBUG build_interaction_graphics: START")
+        print(f"DEBUG: rnn_data shape = {self.rnn_data.shape if self.rnn_data is not None else 'None'}")
+        print(f"DEBUG: input_channels = {self.input_channels}")
+        print(f"DEBUG: output_channels = {self.output_channels}")
+
         if self.rnn_data is None or not self.input_channels or not self.output_channels:
             messagebox.showinfo("Graphics", "Import data and define channels first.")
             return
@@ -6387,20 +6396,24 @@ class RNNTab(ctk.CTkFrame):
         valid_cells = []
         used_rows_indices = set()
         used_cols_indices = set()
+        print(f"DEBUG: input_minmax = {input_minmax}")
         for r, out_name in enumerate(self.output_channels):
             widgets = self.channel_widgets.get(out_name)
             if not widgets or not widgets['var'].get():
+                print(f"DEBUG: Skipping {out_name} - checkbox not checked or no widgets")
                 continue
             row_has_valid_plot = False
             for c, in_name in enumerate(self.input_channels):
                 mn, mx = input_minmax.get(in_name, (np.nan, np.nan))
                 if pd.isna(mn) or pd.isna(mx) or np.isclose(mn, mx):
+                    print(f"DEBUG: Skipping {in_name} - invalid range ({mn}, {mx})")
                     continue
                 valid_cells.append((r, c))
                 used_cols_indices.add(c)
                 row_has_valid_plot = True
             if row_has_valid_plot:
                 used_rows_indices.add(r)
+        print(f"DEBUG: valid_cells count = {len(valid_cells)}")
         if not valid_cells:
             try:
                 plt.close(self.fig_graphics)
@@ -8964,6 +8977,19 @@ class RNNTab(ctk.CTkFrame):
             # Enable UI elements
             self.recompute_graphics_button.configure(state="normal")
             self.run_shap_button.configure(state="disabled")  # SHAP not supported for Cameo
+
+            # Automatically generate interaction graphics
+            print(f"DEBUG: trained_models keys = {list(self.trained_models.keys())}")
+            print(f"DEBUG: input_channels = {self.input_channels}")
+            print(f"DEBUG: output_channels = {self.output_channels}")
+            print(f"DEBUG: rnn_data_bounds = {self.rnn_data_bounds}")
+
+            try:
+                self.recompute_graphics()
+                print("DEBUG: recompute_graphics completed successfully")
+            except Exception as graph_error:
+                print(f"DEBUG: recompute_graphics error: {graph_error}")
+                traceback.print_exc()
 
         except Exception as e:
             messagebox.showerror("Load Error", f"Failed to load Cameo models:\n{e}")
