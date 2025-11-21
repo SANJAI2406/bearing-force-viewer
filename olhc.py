@@ -5747,8 +5747,14 @@ class RNNTab(ctk.CTkFrame):
         self.set_all_models_dropdown.set("GBR")
         # --- END OF FIX ---
 
+        # --- INPUT PARAMETERS SELECTION (for Graphics) ---
+        self.inputs_frame = ctk.CTkScrollableFrame(left_parent, height=100, label_text="Inputs (for Graphics)")
+        self.inputs_frame.grid(row=4, column=0, padx=6, pady=(0, 4), sticky="ew")
+        ctk.CTkLabel(self.inputs_frame, text="Load data to see input parameters.", text_color="gray").pack(padx=10, pady=10)
+        self.input_checkboxes = {}  # Will store {input_name: BooleanVar}
+
         self.channel_frame_outer = ctk.CTkFrame(left_parent)
-        self.channel_frame_outer.grid(row=4, column=0, padx=6, pady=(0, 6), sticky="nsew")
+        self.channel_frame_outer.grid(row=5, column=0, padx=6, pady=(0, 6), sticky="nsew")
         self._ch_canvas = tk.Canvas(self.channel_frame_outer, borderwidth=0, highlightthickness=0)
         self._ch_scroll = tk.Scrollbar(self.channel_frame_outer, orient="vertical", command=self._ch_canvas.yview)
         self._ch_canvas.configure(yscrollcommand=self._ch_scroll.set)
@@ -5765,7 +5771,7 @@ class RNNTab(ctk.CTkFrame):
             pass
 
         self.variations_frame = ctk.CTkScrollableFrame(left_parent, height=140, label_text="Variations")
-        self.variations_frame.grid(row=5, column=0, padx=6, pady=4, sticky="ew")
+        self.variations_frame.grid(row=6, column=0, padx=6, pady=4, sticky="ew")
         ctk.CTkLabel(self.variations_frame, text="Load data and build models to see variations.",
                      text_color="gray").pack(padx=10, pady=10)
 
@@ -5882,7 +5888,35 @@ class RNNTab(ctk.CTkFrame):
             import traceback
             traceback.print_exc()
 
+    def populate_input_checkboxes(self):
+        """Populate input parameter checkboxes for Graphics selection"""
+        for w in self.inputs_frame.winfo_children():
+            w.destroy()
+        self.input_checkboxes.clear()
+
+        if not self.input_channels:
+            ctk.CTkLabel(self.inputs_frame, text="No input parameters.", text_color="gray").pack(padx=10, pady=10)
+            return
+
+        # Create checkboxes in a grid layout (3 columns)
+        num_cols = 3
+        for i in range(num_cols):
+            self.inputs_frame.grid_columnconfigure(i, weight=1)
+
+        for i, name in enumerate(self.input_channels):
+            row = i // num_cols
+            col = i % num_cols
+
+            var = tk.BooleanVar(value=True)  # Default checked
+            chk = ctk.CTkCheckBox(self.inputs_frame, text=name, variable=var, width=120)
+            chk.grid(row=row, column=col, padx=5, pady=2, sticky="w")
+
+            self.input_checkboxes[name] = var
+
     def populate_channel_list(self):
+        # Also populate input checkboxes
+        self.populate_input_checkboxes()
+
         for w in self._ch_inner.winfo_children():
             w.destroy()
         self.channel_widgets.clear()
@@ -6404,6 +6438,10 @@ class RNNTab(ctk.CTkFrame):
                 continue
             row_has_valid_plot = False
             for c, in_name in enumerate(self.input_channels):
+                # Check if input is selected (checkbox checked)
+                if hasattr(self, 'input_checkboxes') and in_name in self.input_checkboxes:
+                    if not self.input_checkboxes[in_name].get():
+                        continue  # Skip unchecked inputs
                 mn, mx = input_minmax.get(in_name, (np.nan, np.nan))
                 if pd.isna(mn) or pd.isna(mx) or np.isclose(mn, mx):
                     print(f"DEBUG: Skipping {in_name} - invalid range ({mn}, {mx})")
@@ -8115,7 +8153,7 @@ class RNNTab(ctk.CTkFrame):
 
             # 3. Restore hidden frames (YOUR FIX)
             self.filter_bar.grid(row=3, column=0, padx=6, pady=(0, 6), sticky="ew")
-            self.variations_frame.grid(row=5, column=0, padx=6, pady=4, sticky="ew")
+            self.variations_frame.grid(row=6, column=0, padx=6, pady=4, sticky="ew")
 
             # 4. Update graphics controls for Scalar mode
             self.graphic_type_menu.configure(values=["Measured/Predicted", "Interaction"], command=self.update_graphic)
