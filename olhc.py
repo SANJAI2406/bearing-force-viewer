@@ -5775,17 +5775,28 @@ class RNNTab(ctk.CTkFrame):
 
         try:
             preset_data = []
-            stats = self.rnn_data[self.input_channels].describe()
+
+            # Use rnn_data_bounds if available (for Cameo models), otherwise use stats
+            use_bounds = hasattr(self, 'rnn_data_bounds') and self.rnn_data_bounds
+            if not use_bounds:
+                stats = self.rnn_data[self.input_channels].describe()
 
             for name in self.input_channels:
-                if name not in stats.columns:
-                    print(f"Warning: Skipping {name}, no valid stats found.")
-                    continue
-
                 unit = self.rnn_units.get(name, "")
-                nominal = stats.loc['mean', name]
-                data_min = stats.loc['min', name]
-                data_max = stats.loc['max', name]
+
+                if use_bounds and name in self.rnn_data_bounds:
+                    # Use bounds from rnn_data_bounds (Cameo model)
+                    data_min, data_max = self.rnn_data_bounds[name]
+                    nominal = (data_min + data_max) / 2  # Use midpoint as nominal
+                else:
+                    # Fall back to stats from data
+                    if name not in stats.columns:
+                        print(f"Warning: Skipping {name}, no valid stats found.")
+                        continue
+                    nominal = stats.loc['mean', name]
+                    data_min = stats.loc['min', name]
+                    data_max = stats.loc['max', name]
+
                 tol_upper = data_max - nominal
                 tol_lower = data_min - nominal
                 cpk = "1.33"
@@ -8876,23 +8887,8 @@ class RNNTab(ctk.CTkFrame):
                     widgets['quality'].configure(fg_color="green")
                     widgets['fit'].configure(fg_color="green")
 
-            # Create stats display
-            stats_message = "AVL Cameo Models Loaded Successfully!\n\n"
-            stats_message += f"Inputs ({len(self.input_channels)}):\n"
-            for inp in self.input_channels[:5]:  # Show first 5
-                stats_message += f"  • {inp}\n"
-            if len(self.input_channels) > 5:
-                stats_message += f"  ... and {len(self.input_channels)-5} more\n"
-
-            stats_message += f"\nOutputs ({len(self.output_channels)}):\n"
-            for out in self.output_channels[:5]:  # Show first 5
-                stats_message += f"  • {out}\n"
-            if len(self.output_channels) > 5:
-                stats_message += f"  ... and {len(self.output_channels)-5} more\n"
-
-            stats_message += "\nAll models are pre-trained and ready for prediction!"
-
-            messagebox.showinfo("Cameo Models Loaded", stats_message)
+            # Display Cameo model info in the Modeling tab
+            self._display_cameo_model_info()
 
             # Enable UI elements
             self.recompute_graphics_button.configure(state="normal")
@@ -8904,6 +8900,101 @@ class RNNTab(ctk.CTkFrame):
 
         finally:
             self.build_model_button.configure(text="Load Cameo Models", state="normal")
+
+    def _display_cameo_model_info(self):
+        """Display AVL Cameo model information in the Modeling tab"""
+        try:
+            # Clear existing plots
+            for ax in self.axes_modeling.flat:
+                ax.clear()
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+            theme_props = self.app.get_theme_properties()
+            bg_color = theme_props.get("plot_bg", "#111111")
+            text_color = theme_props.get("text_color", "#ffffff")
+
+            # Use first 3 axes for header info
+            # Axes layout: [0,0], [0,1], [0,2] - Top row
+            #              [1,0], [1,1], [1,2] - Middle row
+            #              [2,0], [2,1], [2,2] - Bottom row
+
+            # Main title in center top
+            ax_title = self.axes_modeling[0, 1]
+            ax_title.text(0.5, 0.5, "AVL CAMEO MODEL", ha='center', va='center',
+                         fontsize=18, fontweight='bold', color='#00FF00')
+            ax_title.text(0.5, 0.2, "Pre-trained Surrogate Model", ha='center', va='center',
+                         fontsize=10, color=text_color)
+
+            # Status in top-left
+            ax_status = self.axes_modeling[0, 0]
+            ax_status.text(0.5, 0.6, "STATUS", ha='center', va='center',
+                          fontsize=12, fontweight='bold', color=text_color)
+            ax_status.text(0.5, 0.3, "READY", ha='center', va='center',
+                          fontsize=16, fontweight='bold', color='#00FF00')
+
+            # Model type in top-right
+            ax_type = self.axes_modeling[0, 2]
+            ax_type.text(0.5, 0.6, "MODEL TYPE", ha='center', va='center',
+                        fontsize=12, fontweight='bold', color=text_color)
+            ax_type.text(0.5, 0.3, "DLL-Based", ha='center', va='center',
+                        fontsize=14, color='#00BFFF')
+
+            # Input parameters list in middle-left
+            ax_inputs = self.axes_modeling[1, 0]
+            ax_inputs.text(0.5, 0.95, f"INPUTS ({len(self.input_channels)})", ha='center', va='top',
+                          fontsize=11, fontweight='bold', color='#FFA500')
+            input_text = ""
+            for i, inp in enumerate(self.input_channels[:6]):
+                bounds = self.rnn_data_bounds.get(inp, (0, 0))
+                input_text += f"{inp}\n[{bounds[0]:.1f} - {bounds[1]:.1f}]\n"
+            if len(self.input_channels) > 6:
+                input_text += f"... +{len(self.input_channels)-6} more"
+            ax_inputs.text(0.5, 0.75, input_text, ha='center', va='top',
+                          fontsize=8, color=text_color, linespacing=1.2)
+
+            # Output parameters list in middle-center and middle-right
+            ax_outputs = self.axes_modeling[1, 1]
+            ax_outputs.text(0.5, 0.95, f"OUTPUTS ({len(self.output_channels)})", ha='center', va='top',
+                           fontsize=11, fontweight='bold', color='#00FF00')
+            output_text = ""
+            for i, out in enumerate(self.output_channels[:8]):
+                output_text += f"{out}\n"
+            if len(self.output_channels) > 8:
+                output_text += f"... +{len(self.output_channels)-8} more"
+            ax_outputs.text(0.5, 0.75, output_text, ha='center', va='top',
+                           fontsize=8, color=text_color, linespacing=1.3)
+
+            # Quality indicator in middle-right
+            ax_quality = self.axes_modeling[1, 2]
+            ax_quality.text(0.5, 0.6, "QUALITY", ha='center', va='center',
+                           fontsize=12, fontweight='bold', color=text_color)
+            ax_quality.text(0.5, 0.3, "PRE-TRAINED", ha='center', va='center',
+                           fontsize=12, color='#00FF00')
+
+            # Instructions in bottom row
+            ax_instr1 = self.axes_modeling[2, 0]
+            ax_instr1.text(0.5, 0.5, "Use 'Graphics' tab\nfor predictions", ha='center', va='center',
+                          fontsize=10, color='#888888')
+
+            ax_instr2 = self.axes_modeling[2, 1]
+            ax_instr2.text(0.5, 0.5, "Export Design Preset\nfor Design Tab", ha='center', va='center',
+                          fontsize=10, color='#888888')
+
+            ax_instr3 = self.axes_modeling[2, 2]
+            ax_instr3.text(0.5, 0.5, "Adjust sliders in\nGraphics tab", ha='center', va='center',
+                          fontsize=10, color='#888888')
+
+            # Apply background colors
+            for ax in self.axes_modeling.flat:
+                ax.set_facecolor(bg_color)
+
+            self.fig_modeling.set_facecolor(bg_color)
+            self.canvas_modeling.draw()
+
+        except Exception as e:
+            print(f"Error displaying Cameo model info: {e}")
+            traceback.print_exc()
 
     def _display_dynamic_results(self, stats, output_names):
         """Display dynamic modeling results"""
