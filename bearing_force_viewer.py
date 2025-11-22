@@ -58,6 +58,32 @@ except ImportError:
     except ImportError:
         pass
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEBUG MODE - Set to True for detailed console logging
+# ═══════════════════════════════════════════════════════════════════════════════
+DEBUG_MODE = True
+
+def debug_print(msg, level="INFO"):
+    """Print debug message to console if DEBUG_MODE is enabled."""
+    if DEBUG_MODE:
+        prefix = {
+            "INFO": "[INFO]",
+            "WARN": "[WARN]",
+            "ERROR": "[ERROR]",
+            "SUCCESS": "[OK]",
+            "OCR": "[OCR]",
+            "FILE": "[FILE]"
+        }.get(level, "[DEBUG]")
+        print(f"{prefix} {msg}")
+
+# Print startup info
+debug_print("=" * 60, "INFO")
+debug_print("Bearing Force Viewer - DEBUG MODE ENABLED", "INFO")
+debug_print(f"PIL available: {HAS_PIL}", "INFO")
+debug_print(f"EasyOCR available: {USE_EASYOCR}", "INFO")
+debug_print(f"Pytesseract available: {USE_PYTESSERACT}", "INFO")
+debug_print("=" * 60, "INFO")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # APPLE TV INSPIRED LIGHT THEME
@@ -1353,46 +1379,92 @@ class BearingForceViewer:
                 'file_number': file_number, 'filename': filename}
     
     def extract_metadata_from_image_ocr(self, image_path):
-        if not HAS_PIL or (not USE_EASYOCR and not USE_PYTESSERACT):
+        debug_print(f"OCR processing: {image_path.name}", "OCR")
+
+        if not HAS_PIL:
+            debug_print(f"  SKIP: PIL not installed", "WARN")
+            return None
+        if not USE_EASYOCR and not USE_PYTESSERACT:
+            debug_print(f"  SKIP: No OCR engine available", "WARN")
             return None
 
         try:
             img = Image.open(image_path)
             width, height = img.size
+            debug_print(f"  Image size: {width}x{height}", "OCR")
             title_area = img.crop((0, 0, width, int(height * 0.07)))
 
             if USE_EASYOCR and ocr_reader:
                 img_array = np.array(title_area)
                 results = ocr_reader.readtext(img_array, detail=0)
                 text = ' '.join(results)
+                debug_print(f"  EasyOCR raw: '{text}'", "OCR")
             elif USE_PYTESSERACT:
                 text = pytesseract.image_to_string(title_area)
+                debug_print(f"  Tesseract raw: '{text}'", "OCR")
             else:
                 return None
 
-            return self.parse_title_text(text)
+            result = self.parse_title_text(text)
+            if result:
+                debug_print(f"  Parsed: B={result.get('bearing')}, Dir={result.get('direction')}, Ord={result.get('order')}", "SUCCESS")
+            else:
+                debug_print(f"  FAILED: No metadata parsed from text", "WARN")
+            return result
         except Exception as e:
+            debug_print(f"  ERROR: {e}", "ERROR")
             return None
     
     def parse_title_text(self, text):
         result = {}
+        original_text = text
+
+        # Common OCR corrections
         text = text.replace('BI', 'B1').replace('Bl', 'B1')
         text = text.replace('z_', '2.').replace('Z_', '2.')
+        text = text.replace('0rder', 'Order').replace('0R', 'Or')
 
+        if text != original_text:
+            debug_print(f"    Text corrected: '{original_text}' -> '{text}'", "OCR")
+
+        # Try bearing with description: B1 [Ring Gear - Input Side]
         bearing_match = re.search(r'(B\d+)\s*\[([^\]]+)\]', text)
         if bearing_match:
             result['bearing'] = bearing_match.group(1)
             result['bearing_desc'] = bearing_match.group(2).strip()
+            debug_print(f"    BEARING: {result['bearing']} [{result['bearing_desc']}]", "OCR")
+        else:
+            # Try simpler pattern: just B1, B2, etc
+            simple_bearing = re.search(r'\b(B\d+)\b', text)
+            if simple_bearing:
+                result['bearing'] = simple_bearing.group(1)
+                debug_print(f"    BEARING (simple): {result['bearing']}", "OCR")
+            else:
+                debug_print("    NO BEARING found. Check if text contains B1, B2, etc.", "WARN")
 
+        # Try direction: X Component, Y Component, Z Component
         direction_match = re.search(r'(X|Y|Z)\s*Component', text, re.IGNORECASE)
         if direction_match:
             result['direction'] = direction_match.group(1).upper()
+            debug_print(f"    DIRECTION: {result['direction']}", "OCR")
+        else:
+            # Try Force X, Force Y, Force Z
+            force_match = re.search(r'Force\s*(X|Y|Z)', text, re.IGNORECASE)
+            if force_match:
+                result['direction'] = force_match.group(1).upper()
+                debug_print(f"    DIRECTION (Force): {result['direction']}", "OCR")
+            else:
+                debug_print(f"    NO DIRECTION found. Patterns tried: '(X|Y|Z) Component' and 'Force (X|Y|Z)'", "WARN")
 
-        order_match = re.search(r'Order\s*(\d+)[._]?(\d*)', text)
+        # Try order: Order 1, Order 2.0, Order 1_0, etc
+        order_match = re.search(r'Order\s*(\d+)[._]?(\d*)', text, re.IGNORECASE)
         if order_match:
             order_int = order_match.group(1)
             order_dec = order_match.group(2) if order_match.group(2) else '0'
             result['order'] = f"{order_int}.{order_dec}"
+            debug_print(f"    ORDER: {result['order']}", "OCR")
+        else:
+                debug_print("    NO ORDER found. Check if text contains Order 1, Order 2, etc.", "WARN")
 
         return result if result else None
     
@@ -1446,16 +1518,37 @@ class BearingForceViewer:
             return None
     
     def _process_single_file_ocr(self, csv_file, folder):
+        debug_print(f"Processing: {csv_file.name}", "FILE")
         meta = self.parse_filename_info(csv_file.name)
         file_num = meta['file_number']
+        debug_print(f"  From filename: stage={meta.get('stage')}, torque={meta.get('torque')}, cond={meta.get('condition')}, num={file_num}", "FILE")
 
+        # Look for corresponding image
         image_path = Path(folder) / (csv_file.stem + "_Candidate000001.png")
-        if image_path.exists() and (USE_EASYOCR or USE_PYTESSERACT):
-            img_meta = self.extract_metadata_from_image_ocr(image_path)
-            if img_meta and 'bearing' in img_meta:
-                meta.update(img_meta)
-                meta['bearing_full'] = f"{img_meta['bearing']} [{img_meta.get('bearing_desc', '')}]" if img_meta.get('bearing_desc') else img_meta['bearing']
-                return (file_num, meta, True)
+        debug_print(f"  Looking for: {image_path.name}", "FILE")
+
+        if not image_path.exists():
+            debug_print(f"  IMAGE NOT FOUND!", "WARN")
+            # List what files ARE in the folder with similar name
+            similar = list(Path(folder).glob(csv_file.stem[:20] + "*"))
+            if similar:
+                debug_print(f"  Similar files found:", "FILE")
+                for s in similar[:5]:
+                    debug_print(f"    - {s.name}", "FILE")
+            return (file_num, meta, False)
+
+        if not USE_EASYOCR and not USE_PYTESSERACT:
+            debug_print(f"  NO OCR ENGINE - cannot read image", "WARN")
+            return (file_num, meta, False)
+
+        img_meta = self.extract_metadata_from_image_ocr(image_path)
+        if img_meta and 'bearing' in img_meta:
+            meta.update(img_meta)
+            meta['bearing_full'] = f"{img_meta['bearing']} [{img_meta.get('bearing_desc', '')}]" if img_meta.get('bearing_desc') else img_meta['bearing']
+            debug_print(f"  SUCCESS: {meta['bearing_full']}, Dir={meta.get('direction')}, Ord={meta.get('order')}", "SUCCESS")
+            return (file_num, meta, True)
+        else:
+            debug_print(f"  FAILED: OCR did not extract bearing info", "WARN")
 
         return (file_num, meta, False)
     
@@ -1507,7 +1600,58 @@ class BearingForceViewer:
                 if success:
                     ocr_success += 1
 
-        # Always proceed to loading - no manual mapping dialog needed
+        # Print OCR summary
+        debug_print("=" * 70, "INFO")
+        debug_print(f"OCR SUMMARY: {ocr_success}/{total_files} files successfully processed", "INFO")
+        if ocr_success < total_files:
+            debug_print(f"  WARNING: {total_files - ocr_success} files FAILED OCR detection", "WARN")
+        debug_print("=" * 70, "INFO")
+
+        # Print detected metadata summary
+        bearings_found = set()
+        directions_found = set()
+        orders_found = set()
+        failed_files = []
+
+        for fn, fm in sorted(self.file_metadata.items()):
+            bearing = fm.get('bearing_full', fm.get('bearing', None))
+            direction = fm.get('direction', None)
+            order = fm.get('order', None)
+
+            if bearing:
+                bearings_found.add(bearing)
+            if direction:
+                directions_found.add(direction)
+            if order:
+                orders_found.add(order)
+
+            if not bearing or not direction:
+                failed_files.append((fn, fm.get('filename', f'file_{fn}')))
+
+        debug_print(f"UNIQUE BEARINGS FOUND: {len(bearings_found)}", "INFO")
+        for b in sorted(bearings_found):
+            debug_print(f"  - {b}", "INFO")
+
+        debug_print(f"UNIQUE DIRECTIONS FOUND: {len(directions_found)}", "INFO")
+        for d in sorted(directions_found):
+            debug_print(f"  - {d}", "INFO")
+
+        debug_print(f"UNIQUE ORDERS FOUND: {len(orders_found)}", "INFO")
+        for o in sorted(orders_found):
+            debug_print(f"  - {o}", "INFO")
+
+        if failed_files:
+            debug_print(f"FILES WITH MISSING METADATA ({len(failed_files)}):", "WARN")
+            for fn, fname in failed_files[:20]:  # Show first 20
+                fm = self.file_metadata.get(fn, {})
+                debug_print(f"  File {fn:03d}: {fname}", "WARN")
+                debug_print(f"    bearing={fm.get('bearing', 'MISSING')}, dir={fm.get('direction', 'MISSING')}, order={fm.get('order', 'MISSING')}", "WARN")
+            if len(failed_files) > 20:
+                debug_print(f"  ... and {len(failed_files) - 20} more", "WARN")
+
+        debug_print("=" * 70, "INFO")
+
+        # Always proceed to loading
         self.finish_loading(csv_files)
     
     def show_mapping_dialog(self, csv_files):
