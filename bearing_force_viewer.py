@@ -46,17 +46,31 @@ except ImportError:
 USE_EASYOCR = False
 USE_PYTESSERACT = False
 ocr_reader = None
+OCR_INIT_ERROR = None  # Store error message if OCR fails
 
 try:
     import easyocr
+    # Try to initialize - this may fail if firewall blocks model download
     ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
     USE_EASYOCR = True
+    print("[OK] EasyOCR initialized successfully")
 except ImportError:
+    print("[INFO] EasyOCR not installed")
     try:
         import pytesseract
         USE_PYTESSERACT = True
+        print("[OK] Pytesseract available")
     except ImportError:
-        pass
+        print("[INFO] No OCR engine installed")
+except Exception as e:
+    # Catch network errors, timeout, firewall blocks, etc.
+    error_msg = str(e)
+    if "urlopen error" in error_msg or "WinError 10060" in error_msg or "timed out" in error_msg.lower():
+        OCR_INIT_ERROR = "Network blocked (firewall) - OCR models cannot be downloaded"
+    else:
+        OCR_INIT_ERROR = f"OCR init failed: {error_msg[:100]}"
+    print(f"[WARN] {OCR_INIT_ERROR}")
+    print("[INFO] Continuing without OCR - you can manually map bearings/directions")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DEBUG MODE - Set to True for detailed console logging
@@ -1595,6 +1609,19 @@ class BearingForceViewer:
         if DEBUG_MODE:
             log_file = start_debug_log(folder)
             debug_print(f"Data folder: {folder}", "INFO")
+
+        # Warn user if OCR initialization failed (firewall, network, etc.)
+        if OCR_INIT_ERROR:
+            debug_print(f"OCR unavailable: {OCR_INIT_ERROR}", "WARN")
+            messagebox.showwarning(
+                "OCR Unavailable",
+                f"{OCR_INIT_ERROR}\n\n"
+                "The app will still work, but bearing/direction/order\n"
+                "must be inferred from filename patterns only.\n\n"
+                "For full OCR support, run on a network without firewall\n"
+                "restrictions (first run downloads ~100MB of models)."
+            )
+
         self.csv_paths = {}  # Store CSV paths for source validation
 
         csv_files = list(Path(folder).glob("*.csv"))
