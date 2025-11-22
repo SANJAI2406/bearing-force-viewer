@@ -2,6 +2,20 @@
 
 A Python GUI application for visualizing bearing force data from Romax DOE (Design of Experiments) simulation results.
 
+## Quick Start (Windows)
+
+**Option 1: One-click install and run**
+1. Download the repository
+2. Double-click `install_and_run.bat`
+3. Wait for dependencies to install (first time only)
+4. Application will start automatically
+
+**Option 2: Manual installation**
+```bash
+pip install -r requirements.txt
+python bearing_force_viewer.py
+```
+
 ## Features
 
 - **Load and visualize** bearing force frequency response data from CSV files
@@ -10,12 +24,23 @@ A Python GUI application for visualizing bearing force data from Romax DOE (Desi
 - **Interactive plots** with crosshair tracking and data point inspection
 - **Right-click validation** - click any curve to open source CSV in Excel with row highlighted
 - **Export options** - choose bearings, directions, data types (mag/phase/real/imag), and scale (linear/dB)
-- **Parallel processing** for fast data loading
+- **Parallel processing** for fast data loading (up to 30 workers)
+- **Debug logging** - generates debug_log.txt in data folder for troubleshooting
 
 ## Requirements
 
+- Python 3.8+
+- Windows 10/11
+
+Dependencies (installed automatically by `install_and_run.bat`):
 ```
-pip install numpy matplotlib customtkinter pillow easyocr pandas openpyxl
+numpy
+matplotlib
+customtkinter
+pillow
+easyocr
+pandas
+openpyxl
 ```
 
 ## Usage
@@ -46,6 +71,13 @@ Click "Export" to open the export options dialog where you can select:
 - Which directions (X, Y, Z)
 - Data types (Magnitude, Phase, Real, Imaginary)
 - Scale (Linear or Log/dB)
+
+## Troubleshooting
+
+If OCR detection fails:
+1. Check the `debug_log_*.txt` file in your data folder
+2. Ensure `easyocr` is installed: `pip install easyocr`
+3. First OCR run downloads language models (~100MB)
 
 ## License
 
