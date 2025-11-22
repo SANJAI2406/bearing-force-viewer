@@ -62,9 +62,10 @@ except ImportError:
 # DEBUG MODE - Set to True for detailed console logging
 # ═══════════════════════════════════════════════════════════════════════════════
 DEBUG_MODE = True
+DEBUG_LOG_FILE = None  # Will be set when loading data
 
 def debug_print(msg, level="INFO"):
-    """Print debug message to console if DEBUG_MODE is enabled."""
+    """Print debug message to console and optionally write to file."""
     if DEBUG_MODE:
         prefix = {
             "INFO": "[INFO]",
@@ -74,7 +75,29 @@ def debug_print(msg, level="INFO"):
             "OCR": "[OCR]",
             "FILE": "[FILE]"
         }.get(level, "[DEBUG]")
-        print(f"{prefix} {msg}")
+        line = f"{prefix} {msg}"
+        print(line)
+        # Also write to file if set
+        if DEBUG_LOG_FILE:
+            try:
+                with open(DEBUG_LOG_FILE, 'a', encoding='utf-8') as logf:
+                    logf.write(line + "\n")
+            except:
+                pass
+
+def start_debug_log(folder):
+    """Start a new debug log file in the data folder."""
+    global DEBUG_LOG_FILE
+    import datetime
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    DEBUG_LOG_FILE = os.path.join(folder, f'debug_log_{timestamp}.txt')
+    # Clear/create file
+    with open(DEBUG_LOG_FILE, 'w', encoding='utf-8') as logf:
+        logf.write("Bearing Force Viewer - Debug Log\n")
+        logf.write(f"Generated: {datetime.datetime.now()}\n")
+        logf.write("=" * 70 + "\n\n")
+    debug_print(f"Debug log file: {DEBUG_LOG_FILE}", "INFO")
+    return DEBUG_LOG_FILE
 
 # Print startup info
 debug_print("=" * 60, "INFO")
@@ -1567,6 +1590,11 @@ class BearingForceViewer:
         self.data_folder = folder
         self.file_metadata = {}
         self.csv_data = {}
+        
+        # Start debug log file
+        if DEBUG_MODE:
+            log_file = start_debug_log(folder)
+            debug_print(f"Data folder: {folder}", "INFO")
         self.csv_paths = {}  # Store CSV paths for source validation
 
         csv_files = list(Path(folder).glob("*.csv"))
