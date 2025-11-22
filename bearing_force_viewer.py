@@ -42,18 +42,49 @@ try:
 except ImportError:
     HAS_PIL = False
 
-# Try importing OCR
+# ═══════════════════════════════════════════════════════════════════════════════
+# OCR SETUP - Bundled models for offline/firewall environments
+# ═══════════════════════════════════════════════════════════════════════════════
 USE_EASYOCR = False
 USE_PYTESSERACT = False
 ocr_reader = None
-OCR_INIT_ERROR = None  # Store error message if OCR fails
+OCR_INIT_ERROR = None
+
+def get_bundled_model_path():
+    """Get path to bundled EasyOCR models (works with PyInstaller)."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled exe - models are in _MEIPASS/easyocr_models
+        base_path = sys._MEIPASS
+        model_path = os.path.join(base_path, 'easyocr_models')
+        if os.path.exists(model_path):
+            return model_path
+    # Running as script - use default EasyOCR location
+    return None
 
 try:
     import easyocr
-    # Try to initialize - this may fail if firewall blocks model download
-    ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-    USE_EASYOCR = True
-    print("[OK] EasyOCR initialized successfully")
+
+    # Check for bundled models first (for exe distribution)
+    bundled_path = get_bundled_model_path()
+
+    if bundled_path:
+        # Use bundled models - NO internet required
+        print(f"[INFO] Using bundled OCR models from: {bundled_path}")
+        ocr_reader = easyocr.Reader(
+            ['en'],
+            gpu=False,
+            verbose=False,
+            model_storage_directory=bundled_path,
+            download_enabled=False
+        )
+        USE_EASYOCR = True
+        print("[OK] EasyOCR initialized with bundled models (offline mode)")
+    else:
+        # Normal initialization - may download models
+        ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+        USE_EASYOCR = True
+        print("[OK] EasyOCR initialized successfully")
+
 except ImportError:
     print("[INFO] EasyOCR not installed")
     try:
@@ -70,7 +101,7 @@ except Exception as e:
     else:
         OCR_INIT_ERROR = f"OCR init failed: {error_msg[:100]}"
     print(f"[WARN] {OCR_INIT_ERROR}")
-    print("[INFO] Continuing without OCR - you can manually map bearings/directions")
+    print("[INFO] Continuing without OCR - bearing/direction from filename only")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DEBUG MODE - Set to True for detailed console logging
