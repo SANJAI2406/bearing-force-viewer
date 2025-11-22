@@ -1,9 +1,9 @@
 """
-Bearing Force Bode Plot Viewer - Apple TV Edition
+Bearing Force Bode Plot Viewer
 A sophisticated, interactive visualization tool for Romax DOE simulation results.
 
 Features:
-- Apple TV-inspired light theme with elegant typography
+- Clean light theme with elegant typography
 - RIGHT-CLICK VALIDATION: Click any curve to open source CSV and image
 - Interactive graph tracking with crosshairs and coordinates
 - Synchronized cursors across all subplots
@@ -28,7 +28,7 @@ import platform
 # Modern UI Framework
 try:
     import customtkinter as ctk
-    ctk.set_appearance_mode("light")  # Apple TV style - LIGHT mode
+    ctk.set_appearance_mode("light")  # Light mode
     ctk.set_default_color_theme("blue")
     HAS_CTK = True
 except ImportError:
@@ -64,7 +64,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class Theme:
-    """Apple TV inspired light theme - clean, elegant, minimal"""
+    """Clean light theme - clean, elegant, minimal"""
     
     # Background colors - soft whites and light grays
     BG_PRIMARY = "#FFFFFF"        # Pure white
@@ -425,7 +425,7 @@ objExcel.ActiveWindow.ScrollRow = {max(1, target_row - 5)}
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class CollapsiblePanel(ctk.CTkFrame if HAS_CTK else tk.Frame):
-    """Elegant collapsible panel with Apple TV styling"""
+    """Elegant collapsible panel with modern styling"""
     
     def __init__(self, parent, title, expanded=True, **kwargs):
         super().__init__(parent, **kwargs)
@@ -470,13 +470,13 @@ class CollapsiblePanel(ctk.CTkFrame if HAS_CTK else tk.Frame):
 
 
 class StatusBar(ctk.CTkFrame if HAS_CTK else tk.Frame):
-    """Clean status bar with Apple TV styling"""
+    """Clean status bar with progress bar"""
     
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
         
         if HAS_CTK:
-            self.configure(fg_color=Theme.BG_SECONDARY, height=32, corner_radius=0)
+            self.configure(fg_color=Theme.BG_SECONDARY, height=40, corner_radius=0)
         
         # Left - status
         self.status_label = ctk.CTkLabel(
@@ -485,6 +485,14 @@ class StatusBar(ctk.CTkFrame if HAS_CTK else tk.Frame):
             text_color=Theme.TEXT_SECONDARY
         ) if HAS_CTK else tk.Label(self, text="Ready")
         self.status_label.pack(side="left", padx=15)
+        
+        # Progress bar (hidden by default)
+        self.progress_bar = ctk.CTkProgressBar(
+            self, width=200, height=12,
+            fg_color=Theme.BG_TERTIARY,
+            progress_color=Theme.ACCENT_PRIMARY
+        ) if HAS_CTK else ttk.Progressbar(self, length=200, mode='determinate')
+        # Don't pack yet - will show when needed
         
         # Right - coordinates
         self.coord_label = ctk.CTkLabel(
@@ -507,6 +515,27 @@ class StatusBar(ctk.CTkFrame if HAS_CTK else tk.Frame):
         self.status_label.configure(text=text)
         if color:
             self.status_label.configure(text_color=color)
+    
+    def show_progress(self, value=0):
+        """Show progress bar with value 0-1"""
+        self.hint_label.pack_forget()
+        self.progress_bar.pack(side="left", padx=10)
+        if HAS_CTK:
+            self.progress_bar.set(value)
+        else:
+            self.progress_bar['value'] = value * 100
+    
+    def update_progress(self, value):
+        """Update progress bar value 0-1"""
+        if HAS_CTK:
+            self.progress_bar.set(value)
+        else:
+            self.progress_bar['value'] = value * 100
+    
+    def hide_progress(self):
+        """Hide progress bar"""
+        self.progress_bar.pack_forget()
+        self.hint_label.pack(side="right", padx=20)
     
     def set_coordinates(self, x, y, unit_y="N"):
         if x is not None and y is not None:
@@ -814,11 +843,11 @@ class GraphTracker:
 
 class BearingForceViewer:
     """
-    Bearing Force Bode Plot Viewer - Apple TV Edition
+    Bearing Force Bode Plot Viewer
     
     Key Features:
     - RIGHT-CLICK VALIDATION: Click any curve to open source CSV and image
-    - Apple TV-inspired light theme
+    - Clean light theme
     - Interactive crosshair tracking
     - Source file traceability
     """
@@ -860,7 +889,7 @@ class BearingForceViewer:
         self.setup_ui()
     
     def setup_ui(self):
-        """Build the Apple TV-inspired UI with RESIZABLE sidebar"""
+        """Build the Clean UI with RESIZABLE sidebar"""
         
         # Main container using PanedWindow for resizable split
         # This allows dragging the divider between sidebar and plot area
@@ -1244,7 +1273,7 @@ class BearingForceViewer:
                ha='center', va='center', transform=ax.transAxes,
                fontfamily=Theme.FONT_FAMILY)
         
-        ax.text(0.5, 0.48, "Apple TV Edition with Source Validation",
+        ax.text(0.5, 0.48, "Romax DOE Frequency Response Viewer",
                fontsize=14, color=Theme.TEXT_SECONDARY,
                ha='center', va='center', transform=ax.transAxes)
         
@@ -1453,21 +1482,24 @@ class BearingForceViewer:
             return
 
         total_files = len(csv_files)
-        self.status_bar.set_status(f"Processing {total_files} files...", Theme.ACCENT_WARNING)
+        self.status_bar.set_status(f"Loading {total_files} files...", Theme.ACCENT_WARNING)
+        self.status_bar.show_progress(0)
         self.root.update()
 
-        # OCR processing
+        # OCR processing (Phase 1: detect metadata from images)
         ocr_success = 0
         completed = 0
 
-        max_workers = min(8, total_files)
+        max_workers = min(30, total_files)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(self._process_single_file_ocr, csv_file, folder): csv_file
                       for csv_file in csv_files}
 
             for future in as_completed(futures):
                 completed += 1
-                self.status_bar.set_status(f"OCR: {completed}/{total_files}", Theme.ACCENT_WARNING)
+                progress = completed / (total_files * 2)  # OCR is first half
+                self.status_bar.set_status(f"Detecting metadata: {completed}/{total_files}", Theme.ACCENT_WARNING)
+                self.status_bar.update_progress(progress)
                 self.root.update()
 
                 file_num, meta, success = future.result()
@@ -1475,10 +1507,8 @@ class BearingForceViewer:
                 if success:
                     ocr_success += 1
 
-        if ocr_success < len(csv_files):
-            self.show_mapping_dialog(csv_files)
-        else:
-            self.finish_loading(csv_files)
+        # Always proceed to loading - no manual mapping dialog needed
+        self.finish_loading(csv_files)
     
     def show_mapping_dialog(self, csv_files):
         """Show mapping dialog for CSV files"""
@@ -1593,11 +1623,12 @@ class BearingForceViewer:
         all_conditions = set()
 
         total_files = len(csv_files)
-        self.status_bar.set_status(f"Loading CSV files...", Theme.ACCENT_WARNING)
+        self.status_bar.set_status(f"Loading CSV data...", Theme.ACCENT_WARNING)
         self.root.update()
 
+        # CSV loading (Phase 2: second half of progress)
         completed = 0
-        max_workers = min(8, total_files)
+        max_workers = min(30, total_files)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(self._load_single_csv, csv_file): csv_file
@@ -1605,7 +1636,9 @@ class BearingForceViewer:
 
             for future in as_completed(futures):
                 completed += 1
-                self.status_bar.set_status(f"Loading: {completed}/{total_files}", Theme.ACCENT_WARNING)
+                progress = 0.5 + (completed / (total_files * 2))  # Second half
+                self.status_bar.set_status(f"Loading CSV: {completed}/{total_files}", Theme.ACCENT_WARNING)
+                self.status_bar.update_progress(progress)
                 self.root.update()
 
                 file_num, data, csv_path = future.result()
@@ -1686,7 +1719,9 @@ class BearingForceViewer:
         self.source_validator = SourceValidator(self.data_folder, self.file_metadata, self.csv_data)
         self.graph_tracker.source_validator = self.source_validator
 
-        self.status_bar.set_status(f"✓ Loaded {len(self.csv_data)} files", Theme.ACCENT_SECONDARY)
+        # Hide progress bar and show success
+        self.status_bar.hide_progress()
+        self.status_bar.set_status(f"✓ Loaded {len(self.csv_data)} files • {self.candidate_count} candidates", Theme.ACCENT_SECONDARY)
     
     def get_filtered_data(self):
         """Get filtered data with source info for validation"""
