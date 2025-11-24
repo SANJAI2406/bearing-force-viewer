@@ -43,6 +43,22 @@ except ImportError:
     HAS_PIL = False
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# OCR ORDER CORRECTION CONFIG - Modify this if you have different orders!
+# ═══════════════════════════════════════════════════════════════════════════════
+# Set to None to disable correction (accept OCR as-is)
+# Set to a dict to enable smart correction for common OCR errors
+# Example: OCR reads "52" as "5" -> correct "5" to "52"
+#
+# If your orders are multiples of 26 (26, 52, 78), keep this enabled.
+# If you have Order 5, Order 7, etc. as REAL orders, set this to None.
+OCR_ORDER_CORRECTIONS = {
+    5: 52,   # OCR misreads "52" as "5" (missing the "2")
+    7: 78,   # OCR misreads "78" as "7" (missing the "8")
+    2: 26,   # OCR misreads "26" as "2" (missing the "6")
+}
+# To disable: OCR_ORDER_CORRECTIONS = None
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # OCR SETUP - Bundled models for offline/firewall environments
 # ═══════════════════════════════════════════════════════════════════════════════
 USE_EASYOCR = False
@@ -143,6 +159,70 @@ def start_debug_log(folder):
         logf.write("=" * 70 + "\n\n")
     debug_print(f"Debug log file: {DEBUG_LOG_FILE}", "INFO")
     return DEBUG_LOG_FILE
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OCR METADATA CACHING - Speeds up subsequent loads dramatically
+# ═══════════════════════════════════════════════════════════════════════════════
+OCR_CACHE_FILENAME = ".bearing_force_ocr_cache.json"
+
+def get_cache_path(folder):
+    """Get path to OCR cache file in the data folder."""
+    return os.path.join(folder, OCR_CACHE_FILENAME)
+
+def load_ocr_cache(folder):
+    """Load OCR metadata cache from JSON file. Returns dict or None."""
+    import json
+    cache_path = get_cache_path(folder)
+    if not os.path.exists(cache_path):
+        debug_print(f"No cache file found at {cache_path}", "INFO")
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            cache = json.load(f)
+        debug_print(f"Loaded OCR cache with {len(cache.get('metadata', {}))} entries", "SUCCESS")
+        return cache
+    except Exception as e:
+        debug_print(f"Failed to load cache: {e}", "WARN")
+        return None
+
+def save_ocr_cache(folder, file_metadata):
+    """Save OCR metadata to JSON cache file."""
+    import json
+    import datetime
+    cache_path = get_cache_path(folder)
+    cache = {
+        'version': '1.0',
+        'created': datetime.datetime.now().isoformat(),
+        'folder': folder,
+        'metadata': file_metadata
+    }
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2)
+        debug_print(f"Saved OCR cache with {len(file_metadata)} entries to {cache_path}", "SUCCESS")
+        return True
+    except Exception as e:
+        debug_print(f"Failed to save cache: {e}", "WARN")
+        return False
+
+def is_cache_valid(folder, cache):
+    """Check if cache is still valid (same CSV files exist)."""
+    if not cache or 'metadata' not in cache:
+        return False
+    # Quick check: count CSV files
+    csv_files = list(Path(folder).glob("*.csv"))
+    cached_count = len(cache['metadata'])
+    if len(csv_files) != cached_count:
+        debug_print(f"Cache invalid: {len(csv_files)} CSVs vs {cached_count} cached", "WARN")
+        return False
+    # Check if all cached files still exist
+    for file_key in cache['metadata'].keys():
+        csv_path = Path(folder) / (file_key + ".csv")
+        if not csv_path.exists():
+            debug_print(f"Cache invalid: {file_key}.csv no longer exists", "WARN")
+            return False
+    debug_print("Cache is valid", "SUCCESS")
+    return True
 
 # Print startup info
 debug_print("=" * 60, "INFO")
@@ -512,6 +592,120 @@ objExcel.ActiveWindow.ScrollRow = {max(1, target_row - 5)}
             height=32
         ) if HAS_CTK else tk.Button(content, text="Close", command=dialog.destroy)
         close_btn.pack(pady=(0, 15))
+
+    def open_csv_with_band(self, source_info):
+        """
+        Open CSV in Excel and highlight rows within the frequency band range.
+        Used for Scalar mode validation where we want to show which frequency
+        rows contributed to the RMS/Peak calculation.
+        """
+        if not source_info:
+            messagebox.showwarning("No Source", "Could not identify source for this bar")
+            return
+
+        csv_path = source_info.get('csv_path')
+        if not csv_path or not csv_path.exists():
+            messagebox.showwarning("File Not Found", f"CSV file not found:\n{csv_path}")
+            return
+
+        candidate = source_info.get('candidate', 1)
+        freq_band_low = source_info.get('freq_band_low', 0)
+        freq_band_high = source_info.get('freq_band_high', 1000)
+        band_label = source_info.get('band_label', 'Unknown')
+
+        # Calculate which row the candidate's magnitude data is in
+        # CSV structure: Row 7 is frequency header, Row 8 is empty
+        # Each candidate has 5 rows: real, imaginary, magnitude, phase, empty
+        # Candidate 1 starts at row 9
+        base_row = 9 + (candidate - 1) * 5
+        magnitude_row = base_row + 2  # Magnitude row
+
+        # Read the CSV to find which columns fall within the frequency band
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            # Frequency values are in row 7 (index 6), starting from column B
+            if len(lines) >= 7:
+                freq_line = lines[6]  # Row 7 (0-indexed as 6)
+                freq_parts = freq_line.strip().split(',')
+
+                # Find column indices where frequency is within band
+                start_col = None
+                end_col = None
+                for col_idx, val in enumerate(freq_parts[1:], start=2):  # Skip label column, Excel columns start at 1
+                    try:
+                        freq_val = float(val)
+                        if freq_val >= freq_band_low and start_col is None:
+                            start_col = col_idx
+                        if freq_val < freq_band_high:
+                            end_col = col_idx
+                    except:
+                        continue
+
+                if start_col is None:
+                    start_col = 2
+                if end_col is None:
+                    end_col = start_col + 10
+
+        except Exception as e:
+            debug_print(f"Error reading CSV for band detection: {e}", "ERROR")
+            start_col = 2
+            end_col = 50  # Default range
+
+        if platform.system() == 'Windows':
+            try:
+                # Convert column numbers to Excel letters
+                def col_to_letter(col):
+                    result = ""
+                    while col > 0:
+                        col, remainder = divmod(col - 1, 26)
+                        result = chr(65 + remainder) + result
+                    return result
+
+                start_letter = col_to_letter(start_col)
+                end_letter = col_to_letter(end_col)
+
+                # Create VBScript to open Excel and highlight the frequency band range
+                vbs_content = f'''
+Set objExcel = CreateObject("Excel.Application")
+objExcel.Visible = True
+Set objWorkbook = objExcel.Workbooks.Open("{str(csv_path).replace(chr(92), chr(92)+chr(92))}")
+Set ws = objWorkbook.Sheets(1)
+
+' First scroll to the magnitude row for this candidate
+objExcel.ActiveWindow.ScrollRow = {max(1, magnitude_row - 3)}
+
+' Select the frequency band range for magnitude row (row {magnitude_row})
+ws.Range("{start_letter}{magnitude_row}:{end_letter}{magnitude_row}").Select
+
+' Highlight the selected cells with yellow background
+ws.Range("{start_letter}{magnitude_row}:{end_letter}{magnitude_row}").Interior.Color = RGB(255, 255, 150)
+
+' Also highlight frequency row to show which frequencies
+ws.Range("{start_letter}7:{end_letter}7").Interior.Color = RGB(200, 230, 255)
+'''
+                vbs_path = Path(csv_path).parent / "_temp_open_excel_band.vbs"
+                with open(vbs_path, 'w') as f:
+                    f.write(vbs_content)
+
+                subprocess.run(['wscript', str(vbs_path)], check=True)
+
+                # Clean up VBS file after a delay
+                try:
+                    import time
+                    time.sleep(2)
+                    vbs_path.unlink()
+                except:
+                    pass
+
+            except Exception as e:
+                debug_print(f"VBScript error: {e}", "ERROR")
+                # Fallback: just open the file
+                self._open_file(csv_path)
+        else:
+            # On Mac/Linux, just open the file
+            self._open_file(csv_path)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1189,7 +1383,34 @@ class BearingForceViewer:
         # ─── PLOT OPTIONS ───
         self.plot_panel = CollapsiblePanel(self.sidebar_scroll, "Plot Options", expanded=True)
         self.plot_panel.pack(fill="x", pady=6)
-        
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # Output Mode: Scalar vs Dynamic
+        # ═══════════════════════════════════════════════════════════════════════
+        mode_frame = ctk.CTkFrame(self.plot_panel.content, fg_color="transparent") if HAS_CTK else tk.Frame(self.plot_panel.content)
+        mode_frame.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(mode_frame, text="Output Mode", font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color=Theme.ACCENT_PRIMARY).pack(anchor="w") if HAS_CTK else None
+
+        self.output_mode = ctk.StringVar(value="dynamic") if HAS_CTK else tk.StringVar(value="dynamic")
+
+        mode_btns = ctk.CTkFrame(mode_frame, fg_color="transparent") if HAS_CTK else tk.Frame(mode_frame)
+        mode_btns.pack(fill="x", pady=2)
+
+        for text, value in [("Dynamic", "dynamic"), ("Scalar", "scalar")]:
+            btn = ctk.CTkRadioButton(
+                mode_btns, text=text, variable=self.output_mode, value=value,
+                font=ctk.CTkFont(size=11),
+                fg_color=Theme.ACCENT_PRIMARY,
+                text_color=Theme.TEXT_PRIMARY,
+                command=self.on_output_mode_change
+            ) if HAS_CTK else tk.Radiobutton(mode_btns, text=text, variable=self.output_mode, value=value)
+            btn.pack(side="left", padx=8)
+
+        # Separator
+        ctk.CTkFrame(self.plot_panel.content, height=1, fg_color=Theme.BORDER_DEFAULT).pack(fill="x", pady=8) if HAS_CTK else None
+
         # Plot type
         pt_frame = ctk.CTkFrame(self.plot_panel.content, fg_color="transparent") if HAS_CTK else tk.Frame(self.plot_panel.content)
         pt_frame.pack(fill="x", pady=5)
@@ -1294,6 +1515,22 @@ class BearingForceViewer:
             corner_radius=8
         ) if HAS_CTK else tk.Button(btn_row2, text="Clear", command=self.clear_plot)
         self.clear_btn.pack(side="left", expand=True, fill="x", padx=(5, 0))
+
+        # Debug button row
+        btn_row3 = ctk.CTkFrame(action_frame, fg_color="transparent") if HAS_CTK else tk.Frame(action_frame)
+        btn_row3.pack(fill="x", pady=5)
+
+        self.debug_btn = ctk.CTkButton(
+            btn_row3, text="🔍 Export Debug Info",
+            command=self.export_debug_info,
+            height=32,
+            fg_color="#6c757d",
+            hover_color="#5a6268",
+            text_color="#ffffff",
+            corner_radius=6,
+            font=ctk.CTkFont(size=11)
+        ) if HAS_CTK else tk.Button(btn_row3, text="Debug", command=self.export_debug_info)
+        self.debug_btn.pack(fill="x")
         
         # ─── MAIN CONTENT AREA (added to PanedWindow) ───
         self.content_area = ctk.CTkFrame(
@@ -1438,13 +1675,24 @@ class BearingForceViewer:
 
         torque_match = re.search(r'(\d+Nm)_(\w+)', filename)
         torque = torque_match.group(1) if torque_match else "Unknown"
-        condition = torque_match.group(2) if torque_match else "Unknown"
+        # Normalize condition to title case (Coast, Drive) - fixes "coast" vs "Coast" issue
+        condition = torque_match.group(2).title() if torque_match else "Unknown"
 
         number_match = re.search(r'--(\d+)\.csv$', filename)
         file_number = int(number_match.group(1)) if number_match else 0
 
+        # Detect force vs moment from filename
+        # "1st_stage_forces - 25Nm_coast--000.csv" -> force_type = "force"
+        # "1st_stage_moments - 25Nm_coast--041.csv" -> force_type = "moment"
+        if re.search(r'_moments\s*-', filename, re.IGNORECASE):
+            force_type = "moment"
+        elif re.search(r'_forces\s*-', filename, re.IGNORECASE):
+            force_type = "force"
+        else:
+            force_type = "unknown"
+
         return {'stage': stage, 'torque': torque, 'condition': condition,
-                'file_number': file_number, 'filename': filename}
+                'file_number': file_number, 'filename': filename, 'force_type': force_type}
     
     def extract_metadata_from_image_ocr(self, image_path):
         debug_print(f"OCR processing: {image_path.name}", "OCR")
@@ -1511,28 +1759,74 @@ class BearingForceViewer:
                 debug_print("    NO BEARING found. Check if text contains B1, B2, etc.", "WARN")
 
         # Try direction: X Component, Y Component, Z Component
+        # OCR just extracts X/Y/Z - the filename determines Force vs Moment
         direction_match = re.search(r'(X|Y|Z)\s*Component', text, re.IGNORECASE)
         if direction_match:
             result['direction'] = direction_match.group(1).upper()
-            debug_print(f"    DIRECTION: {result['direction']}", "OCR")
+            debug_print(f"    DIRECTION: {result['direction']} (Force/Moment determined by filename)", "OCR")
         else:
-            # Try Force X, Force Y, Force Z
-            force_match = re.search(r'Force\s*(X|Y|Z)', text, re.IGNORECASE)
-            if force_match:
-                result['direction'] = force_match.group(1).upper()
-                debug_print(f"    DIRECTION (Force): {result['direction']}", "OCR")
+            # Try Force/Moment X, Force/Moment Y, Force/Moment Z pattern
+            alt_match = re.search(r'(?:Force|Moment)\s*[-_]?\s*(X|Y|Z)', text, re.IGNORECASE)
+            if alt_match:
+                result['direction'] = alt_match.group(1).upper()
+                debug_print(f"    DIRECTION: {result['direction']} (Force/Moment determined by filename)", "OCR")
             else:
-                debug_print(f"    NO DIRECTION found. Patterns tried: '(X|Y|Z) Component' and 'Force (X|Y|Z)'", "WARN")
+                debug_print(f"    NO DIRECTION found. Patterns: '(X|Y|Z) Component', 'Force/Moment (X|Y|Z)'", "WARN")
 
-        # Try order: Order 1, Order 2.0, Order 1_0, etc
-        order_match = re.search(r'Order\s*(\d+)[._]?(\d*)', text, re.IGNORECASE)
+        # Try order: Order 52.0, Order 26.0, Order 78.0, etc
+        # OCR may read "Order 52" with space/period between digits, e.g. "Order 5 2" or "Order 5.2"
+        # Uses OCR_ORDER_CORRECTIONS config at top of file for common OCR errors
+
+        # Strategy:
+        # 1. First try to find "Order XX" where XX is 2+ digits (best case)
+        # 2. If not found, look for split digits: "Order 5 2" or "Order 5.2" -> "52"
+        # 3. If still not found, accept single digit as-is (Order 1, Order 2, etc. are valid)
+        # 4. Apply OCR_ORDER_CORRECTIONS if enabled (to fix "5" -> "52", etc.)
+
+        order_int = None
+        order_dec = '0'
+        order_pattern_used = None
+
+        # Pattern 1: Full 2+ digit number: "Order 52", "Order52", "Order 52.0"
+        order_match = re.search(r'Order\s*(\d{2,})[._]?(\d*)', text, re.IGNORECASE)
         if order_match:
             order_int = order_match.group(1)
             order_dec = order_match.group(2) if order_match.group(2) else '0'
-            result['order'] = f"{order_int}.{order_dec}"
-            debug_print(f"    ORDER: {result['order']}", "OCR")
+            order_pattern_used = "full 2+ digits"
         else:
-                debug_print("    NO ORDER found. Check if text contains Order 1, Order 2, etc.", "WARN")
+            # Pattern 2: Split digits with space/period/underscore: "Order 5 2", "Order 5.2", "Order 5_2"
+            # This handles OCR reading "52" as "5 2"
+            order_match2 = re.search(r'Order\s*(\d)[._\s]+(\d+)[._]?(\d*)', text, re.IGNORECASE)
+            if order_match2:
+                # Concatenate: "5" + "2" = "52"
+                order_int = order_match2.group(1) + order_match2.group(2)
+                order_dec = order_match2.group(3) if order_match2.group(3) else '0'
+                order_pattern_used = "split digits joined"
+            else:
+                # Pattern 3: Single digit - accept as-is (could be Order 1, Order 2, etc.)
+                # Also handles multi-digit that didn't match above patterns
+                order_match3 = re.search(r'Order\s*(\d+)[._]?(\d*)', text, re.IGNORECASE)
+                if order_match3:
+                    order_int = order_match3.group(1)
+                    order_dec = order_match3.group(2) if order_match3.group(2) else '0'
+                    order_pattern_used = "as-is"
+
+        if order_int is not None:
+            # Apply OCR_ORDER_CORRECTIONS if enabled
+            if OCR_ORDER_CORRECTIONS is not None:
+                try:
+                    order_val = int(order_int)
+                    if order_val in OCR_ORDER_CORRECTIONS:
+                        corrected_val = OCR_ORDER_CORRECTIONS[order_val]
+                        debug_print(f"    ORDER CORRECTED: {order_val} -> {corrected_val} (using OCR_ORDER_CORRECTIONS config)", "OCR")
+                        order_int = str(corrected_val)
+                except ValueError:
+                    pass  # Not a valid integer, skip correction
+
+            result['order'] = f"{order_int}.{order_dec}"
+            debug_print(f"    ORDER ({order_pattern_used}): {result['order']}", "OCR")
+        else:
+            debug_print("    NO ORDER found in text", "WARN")
 
         return result if result else None
     
@@ -1589,7 +1883,11 @@ class BearingForceViewer:
         debug_print(f"Processing: {csv_file.name}", "FILE")
         meta = self.parse_filename_info(csv_file.name)
         file_num = meta['file_number']
-        debug_print(f"  From filename: stage={meta.get('stage')}, torque={meta.get('torque')}, cond={meta.get('condition')}, num={file_num}", "FILE")
+        # Use filename (without extension) as unique key to avoid collision
+        # between force and moment files that have same file_number
+        file_key = csv_file.stem  # e.g., "1st_stage_forces - 120Nm_Coast--000"
+        force_type = meta.get('force_type', 'unknown')
+        debug_print(f"  From filename: stage={meta.get('stage')}, torque={meta.get('torque')}, cond={meta.get('condition')}, num={file_num}, force_type={force_type}", "FILE")
 
         # Look for corresponding image
         image_path = Path(folder) / (csv_file.stem + "_Candidate000001.png")
@@ -1603,28 +1901,41 @@ class BearingForceViewer:
                 debug_print(f"  Similar files found:", "FILE")
                 for s in similar[:5]:
                     debug_print(f"    - {s.name}", "FILE")
-            return (file_num, meta, False)
+            return (file_key, meta, False)  # Use file_key (filename) not file_num
 
         if not USE_EASYOCR and not USE_PYTESSERACT:
             debug_print(f"  NO OCR ENGINE - cannot read image", "WARN")
-            return (file_num, meta, False)
+            return (file_key, meta, False)  # Use file_key (filename) not file_num
 
         img_meta = self.extract_metadata_from_image_ocr(image_path)
         if img_meta and 'bearing' in img_meta:
             meta.update(img_meta)
+
+            # Apply force_type from filename to determine final direction
+            # If filename says "moments", direction X -> Mx, Y -> My, Z -> Mz
+            # If filename says "forces", direction stays X, Y, Z
+            ocr_direction = meta.get('direction', '')
+            if force_type == 'moment' and ocr_direction in ['X', 'Y', 'Z']:
+                meta['direction'] = 'M' + ocr_direction.lower()
+                debug_print(f"  Direction adjusted for MOMENT: {ocr_direction} -> {meta['direction']}", "FILE")
+            elif force_type == 'force' and ocr_direction in ['Mx', 'My', 'Mz']:
+                # OCR wrongly detected moment, but filename says force
+                meta['direction'] = ocr_direction[1].upper()
+                debug_print(f"  Direction adjusted for FORCE: {ocr_direction} -> {meta['direction']}", "FILE")
+
             meta['bearing_full'] = f"{img_meta['bearing']} [{img_meta.get('bearing_desc', '')}]" if img_meta.get('bearing_desc') else img_meta['bearing']
             debug_print(f"  SUCCESS: {meta['bearing_full']}, Dir={meta.get('direction')}, Ord={meta.get('order')}", "SUCCESS")
-            return (file_num, meta, True)
+            return (file_key, meta, True)  # Use file_key (filename) not file_num
         else:
             debug_print(f"  FAILED: OCR did not extract bearing info", "WARN")
 
-        return (file_num, meta, False)
+        return (file_key, meta, False)  # Use file_key (filename) not file_num
     
     def _load_single_csv(self, csv_file):
         meta = self.parse_filename_info(csv_file.name)
-        file_num = meta['file_number']
+        file_key = csv_file.stem  # Use filename stem as unique key
         data = self.load_csv_data(csv_file)
-        return (file_num, data, csv_file)
+        return (file_key, data, csv_file)
     
     def load_data(self):
         folder = self.folder_var.get()
@@ -1665,33 +1976,70 @@ class BearingForceViewer:
         self.status_bar.show_progress(0)
         self.root.update()
 
-        # OCR processing (Phase 1: detect metadata from images)
-        ocr_success = 0
-        completed = 0
+        # ═══════════════════════════════════════════════════════════════════════════
+        # CACHING: Try to load OCR metadata from cache first (MUCH faster!)
+        # ═══════════════════════════════════════════════════════════════════════════
+        cache = load_ocr_cache(folder)
+        cache_used = False
 
-        max_workers = min(30, total_files)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(self._process_single_file_ocr, csv_file, folder): csv_file
-                      for csv_file in csv_files}
+        if cache and is_cache_valid(folder, cache):
+            # Use cached metadata - skip OCR completely!
+            debug_print("=" * 70, "INFO")
+            debug_print("USING CACHED METADATA - Skipping OCR (fast load!)", "SUCCESS")
+            debug_print("=" * 70, "INFO")
+            self.file_metadata = cache['metadata']
+            cache_used = True
+            ocr_success = total_files  # Assume all successful from cache
+            self.status_bar.set_status(f"Loaded {total_files} files from cache", Theme.ACCENT_SECONDARY)
+            self.status_bar.update_progress(0.5)
+            self.root.update()
+        else:
+            # No valid cache - run OCR (slow, but saves cache for next time)
+            debug_print("=" * 70, "INFO")
+            debug_print("NO CACHE - Running OCR detection (first load will be slow...)", "INFO")
+            debug_print("=" * 70, "INFO")
 
-            for future in as_completed(futures):
-                completed += 1
-                progress = completed / (total_files * 2)  # OCR is first half
-                self.status_bar.set_status(f"Detecting metadata: {completed}/{total_files}", Theme.ACCENT_WARNING)
-                self.status_bar.update_progress(progress)
+            # OCR processing (Phase 1: detect metadata from images)
+            ocr_success = 0
+            completed = 0
+
+            max_workers = min(30, total_files)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(self._process_single_file_ocr, csv_file, folder): csv_file
+                          for csv_file in csv_files}
+
+                for future in as_completed(futures):
+                    completed += 1
+                    progress = completed / (total_files * 2)  # OCR is first half
+                    self.status_bar.set_status(f"Detecting metadata (first load): {completed}/{total_files}", Theme.ACCENT_WARNING)
+                    self.status_bar.update_progress(progress)
+                    self.root.update()
+
+                    file_key, meta, success = future.result()  # file_key is now filename stem
+                    self.file_metadata[file_key] = meta
+                    if success:
+                        ocr_success += 1
+
+            # Save cache for next time (async to not block UI)
+            if ocr_success > 0:
+                self.status_bar.set_status(f"Saving cache...", Theme.ACCENT_WARNING)
                 self.root.update()
+                try:
+                    save_ocr_cache(folder, self.file_metadata)
+                    debug_print("Cache saved - next load will be MUCH faster!", "SUCCESS")
+                except Exception as e:
+                    debug_print(f"Cache save failed (non-fatal): {e}", "WARN")
 
-                file_num, meta, success = future.result()
-                self.file_metadata[file_num] = meta
-                if success:
-                    ocr_success += 1
+            # Print OCR summary
+            debug_print("=" * 70, "INFO")
+            debug_print(f"OCR SUMMARY: {ocr_success}/{total_files} files successfully processed", "INFO")
+            if ocr_success < total_files:
+                debug_print(f"  WARNING: {total_files - ocr_success} files FAILED OCR detection", "WARN")
+            debug_print("=" * 70, "INFO")
 
-        # Print OCR summary
-        debug_print("=" * 70, "INFO")
-        debug_print(f"OCR SUMMARY: {ocr_success}/{total_files} files successfully processed", "INFO")
-        if ocr_success < total_files:
-            debug_print(f"  WARNING: {total_files - ocr_success} files FAILED OCR detection", "WARN")
-        debug_print("=" * 70, "INFO")
+        # Update UI to show OCR is done
+        self.status_bar.set_status(f"Processing metadata...", Theme.ACCENT_WARNING)
+        self.root.update()
 
         # Print detected metadata summary
         bearings_found = set()
@@ -1730,12 +2078,16 @@ class BearingForceViewer:
             debug_print(f"FILES WITH MISSING METADATA ({len(failed_files)}):", "WARN")
             for fn, fname in failed_files[:20]:  # Show first 20
                 fm = self.file_metadata.get(fn, {})
-                debug_print(f"  File {fn:03d}: {fname}", "WARN")
+                debug_print(f"  File {fn}: {fname}", "WARN")
                 debug_print(f"    bearing={fm.get('bearing', 'MISSING')}, dir={fm.get('direction', 'MISSING')}, order={fm.get('order', 'MISSING')}", "WARN")
             if len(failed_files) > 20:
                 debug_print(f"  ... and {len(failed_files) - 20} more", "WARN")
 
         debug_print("=" * 70, "INFO")
+
+        # Update status before CSV loading phase
+        self.status_bar.set_status(f"Starting CSV data loading...", Theme.ACCENT_WARNING)
+        self.root.update()
 
         # Always proceed to loading
         self.finish_loading(csv_files)
@@ -1853,42 +2205,38 @@ class BearingForceViewer:
         all_conditions = set()
 
         total_files = len(csv_files)
-        self.status_bar.set_status(f"Loading CSV data...", Theme.ACCENT_WARNING)
+
+        # LAZY LOADING: Don't load all CSV data now - load on demand when plotting
+        # This makes the app usable much faster, especially on slow network drives
+        self.status_bar.set_status(f"Setting up ({total_files} files)...", Theme.ACCENT_WARNING)
         self.root.update()
 
-        # CSV loading (Phase 2: second half of progress)
-        completed = 0
-        max_workers = min(30, total_files)
+        # Store csv_files list for lazy loading later
+        self._csv_files_list = {f.stem: f for f in csv_files}
+        self.csv_paths = {f.stem: f for f in csv_files}
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(self._load_single_csv, csv_file): csv_file
-                      for csv_file in csv_files}
+        # Load just ONE CSV to get candidate count (needed for UI)
+        if csv_files:
+            first_csv = csv_files[0]
+            first_data = self.load_csv_data(first_csv)
+            if first_data:
+                self.csv_data[first_csv.stem] = first_data
+                self.candidate_count = len(first_data)
 
-            for future in as_completed(futures):
-                completed += 1
-                progress = 0.5 + (completed / (total_files * 2))  # Second half
-                self.status_bar.set_status(f"Loading CSV: {completed}/{total_files}", Theme.ACCENT_WARNING)
-                self.status_bar.update_progress(progress)
-                self.root.update()
-
-                file_num, data, csv_path = future.result()
-                if data:
-                    self.csv_data[file_num] = data
-                    self.csv_paths = getattr(self, 'csv_paths', {})
-                    self.csv_paths[file_num] = csv_path
-                    if self.candidate_count == 0:
-                        self.candidate_count = len(data)
+        self.status_bar.update_progress(0.8)
+        self.root.update()
 
         for csv_file in csv_files:
-            meta = self.parse_filename_info(csv_file.name)
-            file_num = meta['file_number']
-            fm = self.file_metadata.get(file_num, {})
+            file_key = csv_file.stem  # Use filename stem as unique key
+            fm = self.file_metadata.get(file_key, {})
             all_bearings.add(fm.get('bearing_full', fm.get('bearing', 'Unknown')))
             all_directions.add(fm.get('direction', 'Unknown'))
             all_orders.add(fm.get('order', 'Unknown'))
             all_stages.add(fm.get('stage', '1'))
             all_torques.add(fm.get('torque', 'Unknown'))
-            all_conditions.add(fm.get('condition', 'Unknown'))
+            # Normalize condition to title case (Coast, Drive) to avoid duplicates
+            cond = fm.get('condition', 'Unknown')
+            all_conditions.add(cond.title() if cond and cond != 'Unknown' else cond)
 
         self.bearings = sorted([b for b in all_bearings if b != 'Unknown'],
                               key=lambda x: int(re.search(r'B(\d+)', x).group(1)) if re.search(r'B(\d+)', x) else 0)
@@ -1921,9 +2269,9 @@ class BearingForceViewer:
         if self.bearings:
             self.bearing_vars[self.bearings[0]].set(True)
 
-        # Update combos
+        # Update combos - add "All" option for order to allow multi-bearing/direction plots
         if HAS_CTK:
-            self.order_combo.configure(values=self.orders)
+            self.order_combo.configure(values=["All"] + self.orders)
             self.stage_combo.configure(values=self.stages)
             self.torque_combo.configure(values=self.torques)
             self.condition_combo.configure(values=self.conditions)
@@ -1984,12 +2332,23 @@ class BearingForceViewer:
 
             is_selected = any(b == bearing for b, _ in selected_bearings)
 
+            # Check order - "All" means match any order
+            order_match = (order == "All") or (meta.get('order') == order)
+
             if (is_selected and
-                meta.get('order') == order and
+                order_match and
                 meta.get('stage') == stage and
                 meta.get('torque') == torque and
-                meta.get('condition') == condition and
+                meta.get('condition', '').lower() == condition.lower() and
                 meta.get('direction') in selected_dirs):
+
+                # LAZY LOADING: Load CSV data on demand if not already loaded
+                if file_num not in self.csv_data:
+                    csv_path = self._csv_files_list.get(file_num) if hasattr(self, '_csv_files_list') else None
+                    if csv_path:
+                        data = self.load_csv_data(csv_path)
+                        if data:
+                            self.csv_data[file_num] = data
 
                 if file_num in self.csv_data:
                     if bearing_full not in result:
@@ -2019,16 +2378,434 @@ class BearingForceViewer:
                             }
                             result[bearing_full][direction].append(cand_data)
         return result
-    
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # SCALAR MODE - RMS and Peak calculation for frequency bands
+    # ═══════════════════════════════════════════════════════════════════════════════
+
+    # Frequency bands for scalar calculation (Hz)
+    SCALAR_BANDS = [
+        (0, 1000, "0-1kHz"),
+        (1000, 3000, "1-3kHz"),
+        (3000, 5000, "3-5kHz"),
+        (5000, 10000, "5-10kHz")
+    ]
+
+    def on_output_mode_change(self):
+        """Handle output mode toggle between Dynamic and Scalar"""
+        mode = self.output_mode.get()
+        debug_print(f"Output mode changed to: {mode}", "INFO")
+        # Auto-replot if data is loaded
+        if hasattr(self, 'data') and self.data:
+            self.plot_data()
+
+    def calculate_scalar_values(self, frequencies, magnitude):
+        """Calculate RMS and Peak values for each frequency band.
+
+        Args:
+            frequencies: Array of frequency values (Hz)
+            magnitude: Array of magnitude values
+
+        Returns:
+            dict with band_name -> {'rms': value, 'peak': value}
+        """
+        freq = np.array(frequencies)
+        mag = np.array(magnitude)
+
+        results = {}
+        for low, high, label in self.SCALAR_BANDS:
+            # Find indices within this band
+            mask = (freq >= low) & (freq < high)
+            band_mag = mag[mask]
+
+            if len(band_mag) > 0:
+                rms = np.sqrt(np.mean(band_mag ** 2))
+                peak = np.max(band_mag)
+            else:
+                rms = 0.0
+                peak = 0.0
+
+            results[label] = {'rms': rms, 'peak': peak}
+
+        return results
+
+    def plot_scalar_data(self):
+        """Plot bar charts for Scalar mode (RMS and Peak values per frequency band)"""
+        self.fig.clear()
+        if self.graph_tracker:
+            self.graph_tracker.clear_data()
+
+        filtered = self.get_filtered_data()
+        if not filtered:
+            messagebox.showwarning("No Data", "No data matches filters.\nCheck selections.")
+            return
+
+        order = self.order_var.get()
+        torque = self.torque_var.get()
+        condition = self.condition_var.get()
+
+        bearings = sorted(filtered.keys(),
+                         key=lambda x: int(re.search(r'B(\d+)', x).group(1)) if re.search(r'B(\d+)', x) else 0)
+        all_dirs = set()
+        for bearing_data in filtered.values():
+            all_dirs.update(bearing_data.keys())
+        directions = sorted(all_dirs)
+
+        num_bearings = len(bearings)
+        num_dirs = len(directions)
+
+        if num_bearings == 0 or num_dirs == 0:
+            messagebox.showwarning("No Data", "No data to plot")
+            return
+
+        # 2 rows per bearing (RMS and Peak)
+        num_rows = num_bearings * 2
+        axes = self.fig.subplots(num_rows, num_dirs, squeeze=False)
+
+        num_cands = len(self.parse_candidate_selection())
+        colors = Theme.PLOT_COLORS
+        band_labels = [b[2] for b in self.SCALAR_BANDS]
+        x_pos = np.arange(len(band_labels))
+        bar_width = 0.8 / max(num_cands, 1)
+
+        # Store bar info for right-click validation
+        self._scalar_bar_info = {}
+
+        for bearing_idx, bearing_full in enumerate(bearings):
+            short_match = re.search(r'(B\d+)', bearing_full)
+            bearing_short = short_match.group(1) if short_match else bearing_full
+
+            bearing_data = filtered[bearing_full]
+
+            for dir_idx, direction in enumerate(directions):
+                cands = bearing_data.get(direction, [])
+
+                ax_rms = axes[bearing_idx * 2, dir_idx]
+                ax_peak = axes[bearing_idx * 2 + 1, dir_idx]
+
+                for i, cd in enumerate(cands):
+                    color = colors[i % len(colors)]
+                    cand_num = cd.get('candidate', i+1)
+                    label = f"C{cand_num}"
+                    source_info = cd.get('_source_info', {})
+
+                    # Calculate scalar values for this candidate
+                    if 'frequencies' in cd and 'magnitude' in cd:
+                        scalar_vals = self.calculate_scalar_values(cd['frequencies'], cd['magnitude'])
+
+                        rms_values = [scalar_vals[bl]['rms'] for bl in band_labels]
+                        peak_values = [scalar_vals[bl]['peak'] for bl in band_labels]
+
+                        # Bar positions offset for each candidate
+                        offset = (i - num_cands/2 + 0.5) * bar_width
+
+                        bars_rms = ax_rms.bar(x_pos + offset, rms_values, bar_width,
+                                  color=color, label=label, alpha=0.8, edgecolor='white', picker=True)
+                        bars_peak = ax_peak.bar(x_pos + offset, peak_values, bar_width,
+                                   color=color, label=label, alpha=0.8, edgecolor='white', picker=True)
+
+                        # Store info for each bar for right-click
+                        for band_idx, (bar_rms, bar_peak) in enumerate(zip(bars_rms, bars_peak)):
+                            band_range = self.SCALAR_BANDS[band_idx]
+                            bar_info = {
+                                'candidate': cand_num,
+                                'bearing': bearing_short,
+                                'bearing_full': bearing_full,
+                                'direction': direction,
+                                'band_label': band_labels[band_idx],
+                                'band_low': band_range[0],
+                                'band_high': band_range[1],
+                                'source_info': source_info
+                            }
+                            self._scalar_bar_info[id(bar_rms)] = bar_info
+                            self._scalar_bar_info[id(bar_peak)] = bar_info
+
+                # Style RMS axis
+                ax_rms.set_title(f"{bearing_short} - {direction} - RMS",
+                                fontsize=11, fontweight='bold', color=Theme.TEXT_PRIMARY)
+                ax_rms.set_xlabel("Frequency Band", fontsize=10, color=Theme.TEXT_SECONDARY)
+                ax_rms.set_ylabel("RMS (N)", fontsize=10, color=Theme.TEXT_SECONDARY)
+                ax_rms.set_xticks(x_pos)
+                ax_rms.set_xticklabels(band_labels, fontsize=9)
+                ax_rms.grid(True, axis='y', ls='-', alpha=0.2, color=Theme.BORDER_DEFAULT)
+                ax_rms.set_facecolor(Theme.BG_CARD)
+                for spine in ax_rms.spines.values():
+                    spine.set_color(Theme.BORDER_DEFAULT)
+                    spine.set_linewidth(0.5)
+
+                # Style Peak axis
+                ax_peak.set_title(f"{bearing_short} - {direction} - Peak",
+                                 fontsize=11, fontweight='bold', color=Theme.TEXT_PRIMARY)
+                ax_peak.set_xlabel("Frequency Band", fontsize=10, color=Theme.TEXT_SECONDARY)
+                ax_peak.set_ylabel("Peak (N)", fontsize=10, color=Theme.TEXT_SECONDARY)
+                ax_peak.set_xticks(x_pos)
+                ax_peak.set_xticklabels(band_labels, fontsize=9)
+                ax_peak.grid(True, axis='y', ls='-', alpha=0.2, color=Theme.BORDER_DEFAULT)
+                ax_peak.set_facecolor(Theme.BG_CARD)
+                for spine in ax_peak.spines.values():
+                    spine.set_color(Theme.BORDER_DEFAULT)
+                    spine.set_linewidth(0.5)
+
+        # Add legend to first subplot
+        if num_cands <= 15 and axes.size > 0:
+            axes[0, 0].legend(loc='upper right', fontsize=8, ncol=2,
+                             facecolor=Theme.BG_CARD, edgecolor=Theme.BORDER_DEFAULT,
+                             labelcolor=Theme.TEXT_PRIMARY, framealpha=0.95)
+
+        title = f"Bearing Force (SCALAR) - {torque} {condition}"
+        if num_cands > 1:
+            title += f" ({num_cands} candidates)"
+        self.fig.suptitle(title, fontsize=14, fontweight='bold', color=Theme.TEXT_PRIMARY)
+
+        self.fig.tight_layout()
+        self.fig.subplots_adjust(top=0.93)
+
+        # Connect right-click event for bar validation (use button_press_event, not pick_event)
+        self._scalar_cid = self.canvas.mpl_connect('button_press_event', self._on_scalar_click)
+
+        self.canvas.draw()
+        self.status_bar.set_status(f"✓ Scalar plot: RMS & Peak • Right-click bar to validate", Theme.ACCENT_SECONDARY)
+
+    def _on_scalar_click(self, event):
+        """Handle right-click on scalar bar chart to show source validation"""
+        if event.button != 3:  # Right-click only
+            return
+
+        if event.inaxes is None:
+            return
+
+        # Find which bar was clicked by checking if click point is inside any bar
+        clicked_bar = None
+        clicked_bar_info = None
+
+        for bar_id, bar_info in self._scalar_bar_info.items():
+            # We need to find the actual bar object - iterate through all axes patches
+            for ax in self.fig.axes:
+                for patch in ax.patches:
+                    if id(patch) == bar_id:
+                        # Check if click is inside this bar
+                        if patch.contains_point([event.x, event.y]):
+                            clicked_bar = patch
+                            clicked_bar_info = bar_info
+                            break
+                if clicked_bar:
+                    break
+            if clicked_bar:
+                break
+
+        if not clicked_bar_info:
+            return
+
+        source_info = clicked_bar_info.get('source_info', {})
+        if not source_info:
+            messagebox.showinfo("No Source", "No source info available for this bar")
+            return
+
+        # Add band info to source_info for highlighting
+        source_info_with_band = source_info.copy()
+        source_info_with_band['freq_band_low'] = clicked_bar_info['band_low']
+        source_info_with_band['freq_band_high'] = clicked_bar_info['band_high']
+        source_info_with_band['band_label'] = clicked_bar_info['band_label']
+
+        # Show context menu
+        self._show_scalar_context_menu(event, clicked_bar_info, source_info_with_band)
+
+    def _show_scalar_context_menu(self, event, bar_info, source_info):
+        """Show right-click context menu for scalar bar validation"""
+        menu = Menu(self.canvas.get_tk_widget(), tearoff=0)
+
+        candidate = bar_info.get('candidate', '?')
+        bearing = bar_info.get('bearing', '?')
+        direction = bar_info.get('direction', '?')
+        band_label = bar_info.get('band_label', '?')
+
+        # Header
+        menu.add_command(
+            label=f"▶ Candidate {candidate} ({bearing}-{direction})",
+            state="disabled"
+        )
+        menu.add_command(
+            label=f"   Band: {band_label}",
+            state="disabled"
+        )
+        menu.add_separator()
+
+        # Menu items
+        menu.add_command(
+            label="📊 Open CSV (highlight freq band rows)",
+            command=lambda si=source_info: self.source_validator.open_csv_with_band(si)
+        )
+        menu.add_command(
+            label=f"🖼️ Open Image (Candidate {candidate})",
+            command=lambda si=source_info: self.source_validator.open_image_only(si)
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="ℹ️ Show Source Details",
+            command=lambda si=source_info: self.source_validator.show_source_info_dialog(
+                self.canvas.get_tk_widget().winfo_toplevel(), si)
+        )
+
+        try:
+            # Get screen coordinates from canvas widget
+            widget = self.canvas.get_tk_widget()
+            x_screen = widget.winfo_rootx() + int(event.x)
+            y_screen = widget.winfo_rooty() + int(widget.winfo_height() - event.y)  # Flip y
+            menu.tk_popup(x_screen, y_screen)
+        finally:
+            menu.grab_release()
+
     def clear_plot(self):
         self.fig.clear()
         if self.graph_tracker:
             self.graph_tracker.clear_data()
         self._show_welcome_screen()
         self.status_bar.set_status("Plot cleared", Theme.TEXT_MUTED)
-    
+
+    def export_debug_info(self):
+        """Export detailed debug info to a text file for troubleshooting"""
+        from datetime import datetime
+
+        # Ask where to save
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt")],
+            initialfile=f"debug_info_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            title="Save Debug Info"
+        )
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("BEARING FORCE VIEWER - DEBUG REPORT\n")
+                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 80 + "\n\n")
+
+                # Environment info
+                f.write("─" * 40 + "\n")
+                f.write("ENVIRONMENT\n")
+                f.write("─" * 40 + "\n")
+                f.write(f"OCR Engine Available: EasyOCR={USE_EASYOCR}, PyTesseract={USE_PYTESSERACT}\n")
+                f.write(f"OCR Reader Initialized: {ocr_reader is not None}\n")
+                f.write(f"OCR Init Error: {OCR_INIT_ERROR}\n")
+                f.write(f"PIL Available: {HAS_PIL}\n")
+                f.write(f"CustomTkinter: {HAS_CTK}\n\n")
+
+                # Data folder
+                f.write("─" * 40 + "\n")
+                f.write("DATA FOLDER\n")
+                f.write("─" * 40 + "\n")
+                folder = getattr(self, 'data_folder', None)
+                f.write(f"Folder Path: {folder}\n\n")
+
+                if folder and os.path.exists(folder):
+                    # List ALL files in folder
+                    f.write("ALL FILES IN FOLDER:\n")
+                    all_files = sorted(os.listdir(folder))
+                    for fname in all_files:
+                        fpath = os.path.join(folder, fname)
+                        fsize = os.path.getsize(fpath) if os.path.isfile(fpath) else 0
+                        f.write(f"  {fname} ({fsize:,} bytes)\n")
+                    f.write("\n")
+
+                    # CSV files specifically
+                    csv_files = [fn for fn in all_files if fn.endswith('.csv')]
+                    f.write(f"CSV FILES FOUND: {len(csv_files)}\n")
+
+                    # Count forces vs moments
+                    forces_count = sum(1 for fn in csv_files if re.search(r'_forces\s*-', fn, re.IGNORECASE))
+                    moments_count = sum(1 for fn in csv_files if re.search(r'_moments\s*-', fn, re.IGNORECASE))
+                    f.write(f"  -> FORCES files (regex '_forces\\s*-'): {forces_count}\n")
+                    f.write(f"  -> MOMENTS files (regex '_moments\\s*-'): {moments_count}\n")
+                    f.write(f"  -> UNKNOWN: {len(csv_files) - forces_count - moments_count}\n\n")
+
+                    for csv_name in csv_files:
+                        # Parse filename info
+                        meta = self.parse_filename_info(csv_name)
+                        f.write(f"\n  FILE: {csv_name}\n")
+                        f.write(f"    file_number: {meta.get('file_number')}\n")
+
+                        # Show EXACT regex match for debugging
+                        moment_match = re.search(r'_moments\s*-', csv_name, re.IGNORECASE)
+                        force_match = re.search(r'_forces\s*-', csv_name, re.IGNORECASE)
+                        f.write(f"    REGEX TEST: _moments match={moment_match is not None}, _forces match={force_match is not None}\n")
+                        f.write(f"    force_type:  {meta.get('force_type')} <-- FROM FILENAME\n")
+                        f.write(f"    stage:       {meta.get('stage')}\n")
+                        f.write(f"    torque:      {meta.get('torque')}\n")
+                        f.write(f"    condition:   {meta.get('condition')}\n")
+                    f.write("\n")
+
+                # Loaded metadata
+                f.write("─" * 40 + "\n")
+                f.write("LOADED FILE METADATA (after OCR)\n")
+                f.write("─" * 40 + "\n")
+                if hasattr(self, 'file_metadata') and self.file_metadata:
+                    for file_key in sorted(self.file_metadata.keys()):
+                        fm = self.file_metadata[file_key]
+                        f.write(f"\nFile: {file_key}\n")
+                        f.write(f"  filename:     {fm.get('filename', 'N/A')}\n")
+                        f.write(f"  force_type:   {fm.get('force_type', 'N/A')} <-- FROM FILENAME\n")
+                        f.write(f"  bearing:      {fm.get('bearing', 'N/A')}\n")
+                        f.write(f"  bearing_full: {fm.get('bearing_full', 'N/A')}\n")
+                        f.write(f"  direction:    {fm.get('direction', 'N/A')} <-- FINAL (after force_type applied)\n")
+                        f.write(f"  order:        {fm.get('order', 'N/A')}\n")
+                        f.write(f"  stage:        {fm.get('stage', 'N/A')}\n")
+                        f.write(f"  torque:       {fm.get('torque', 'N/A')}\n")
+                        f.write(f"  condition:    {fm.get('condition', 'N/A')}\n")
+                else:
+                    f.write("No file metadata loaded yet. Click 'Load Data' first.\n")
+
+                # Detected directions
+                f.write("\n")
+                f.write("─" * 40 + "\n")
+                f.write("DETECTED UNIQUE VALUES\n")
+                f.write("─" * 40 + "\n")
+                f.write(f"Bearings:   {getattr(self, 'bearings', [])}\n")
+                f.write(f"Directions: {getattr(self, 'directions', [])}\n")
+                f.write(f"Orders:     {getattr(self, 'orders', [])}\n")
+                f.write(f"Stages:     {getattr(self, 'stages', [])}\n")
+                f.write(f"Torques:    {getattr(self, 'torques', [])}\n")
+                f.write(f"Conditions: {getattr(self, 'conditions', [])}\n")
+
+                # Current UI selections
+                f.write("\n")
+                f.write("─" * 40 + "\n")
+                f.write("CURRENT UI SELECTIONS\n")
+                f.write("─" * 40 + "\n")
+                if hasattr(self, 'bearing_vars'):
+                    selected_bearings = [b for b, v in self.bearing_vars.items() if v.get()]
+                    f.write(f"Selected Bearings: {selected_bearings}\n")
+                if hasattr(self, 'direction_vars'):
+                    selected_dirs = [d for d, v in self.direction_vars.items() if v.get()]
+                    f.write(f"Selected Directions: {selected_dirs}\n")
+                f.write(f"Order: {getattr(self, 'order_var', tk.StringVar()).get()}\n")
+                f.write(f"Torque: {getattr(self, 'torque_var', tk.StringVar()).get()}\n")
+                f.write(f"Condition: {getattr(self, 'condition_var', tk.StringVar()).get()}\n")
+
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("END OF DEBUG REPORT\n")
+                f.write("=" * 80 + "\n")
+
+            messagebox.showinfo("Debug Info Exported", f"Debug info saved to:\n{filepath}\n\nPlease share this file for troubleshooting.")
+
+            # Also try to open the file
+            try:
+                os.startfile(filepath)
+            except:
+                pass
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export debug info: {e}")
+
     def plot_data(self):
         """Plot data with source validation support"""
+        # Check output mode - Scalar vs Dynamic
+        if self.output_mode.get() == "scalar":
+            self.plot_scalar_data()
+            return
+
         self.fig.clear()
         if self.graph_tracker:
             self.graph_tracker.clear_data()
@@ -2169,11 +2946,69 @@ class BearingForceViewer:
         self.canvas.draw()
         self.status_bar.set_status(f"✓ Plotted {num_cands} candidates • Right-click to validate", Theme.ACCENT_SECONDARY)
     
+    def get_data_for_export(self, torque, order, bearings, directions, candidates, condition=None):
+        """Get filtered data for specific torque/order/condition combination for export.
+
+        Returns dict: {bearing_full: {direction: [cand_data, ...]}}
+        """
+        stage = self.stage_var.get()
+        # Use provided condition for export, or fall back to GUI selection
+        if condition is None:
+            condition = self.condition_var.get()
+
+        result = {}
+        for file_num, meta in self.file_metadata.items():
+            bearing = meta.get('bearing')
+            bearing_full = meta.get('bearing_full', bearing)
+
+            # Check if this bearing is selected
+            is_selected = any(b == bearing for b, _ in bearings)
+
+            # Check order match
+            order_match = (order == "All") or (meta.get('order') == order)
+
+            if (is_selected and
+                order_match and
+                meta.get('stage') == stage and
+                meta.get('torque') == torque and
+                meta.get('condition', '').lower() == condition.lower() and
+                meta.get('direction') in directions):
+
+                # LAZY LOADING: Load CSV data on demand if not already loaded
+                if file_num not in self.csv_data:
+                    csv_path = self._csv_files_list.get(file_num) if hasattr(self, '_csv_files_list') else None
+                    if csv_path:
+                        data = self.load_csv_data(csv_path)
+                        if data:
+                            self.csv_data[file_num] = data
+
+                if file_num in self.csv_data:
+                    if bearing_full not in result:
+                        result[bearing_full] = {}
+                    direction = meta['direction']
+                    if direction not in result[bearing_full]:
+                        result[bearing_full][direction] = []
+
+                    for cand_data in self.csv_data[file_num]:
+                        if cand_data.get('candidate') in candidates:
+                            result[bearing_full][direction].append(cand_data)
+
+        return result
+
     def export_to_excel(self):
-        """Show export options dialog and export data"""
-        filtered = self.get_filtered_data()
-        if not filtered:
-            messagebox.showwarning("No Data", "No data to export. Load data and plot first.")
+        """Show export options dialog with Torque, Order, Bearing, Direction selection.
+
+        - Multiple torques = multiple xlsx files
+        - Multiple orders = multiple sheets within each file
+        - Bearings/Directions = columns (same logic as before)
+        """
+        # Check output mode - Scalar exports different data
+        if self.output_mode.get() == "scalar":
+            self.export_scalar_to_excel()
+            return
+
+        if not self.file_metadata:
+            messagebox.showwarning("No Data", "No data to export. Load data first.")
             return
 
         try:
@@ -2185,7 +3020,7 @@ class BearingForceViewer:
         # Create export options dialog
         dialog = ctk.CTkToplevel(self.root) if HAS_CTK else tk.Toplevel(self.root)
         dialog.title("Export Options")
-        dialog.geometry("500x600")
+        dialog.geometry("600x750")
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -2200,15 +3035,86 @@ class BearingForceViewer:
         title_lbl = ctk.CTkLabel(main_frame, text="Export Options",
                                   font=ctk.CTkFont(size=16, weight="bold"),
                                   text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Label(main_frame, text="Export Options", font=("Arial", 14, "bold"))
-        title_lbl.pack(pady=(10, 15))
+        title_lbl.pack(pady=(10, 5))
 
-        # Get available options from filtered data
-        bearings = sorted(filtered.keys(),
-                         key=lambda x: int(re.search(r'B(\d+)', x).group(1)) if re.search(r'B(\d+)', x) else 0)
-        all_dirs = set()
-        for bearing_data in filtered.values():
-            all_dirs.update(bearing_data.keys())
-        directions = sorted(all_dirs)
+        # Info label
+        info_lbl = ctk.CTkLabel(main_frame, text="Torque × Condition → Separate Files | Orders → Separate Sheets",
+                                 font=ctk.CTkFont(size=11),
+                                 text_color=Theme.TEXT_MUTED) if HAS_CTK else tk.Label(main_frame, text="Torque × Condition = Files, Orders = Sheets")
+        info_lbl.pack(pady=(0, 10))
+
+        # Get available options from metadata
+        all_bearings = set()
+        all_directions = set()
+        for meta in self.file_metadata.values():
+            if meta.get('bearing'):
+                all_bearings.add((meta.get('bearing'), meta.get('bearing_full', meta.get('bearing'))))
+            if meta.get('direction'):
+                all_directions.add(meta.get('direction'))
+
+        bearings_list = sorted(all_bearings, key=lambda x: int(re.search(r'B(\d+)', x[0]).group(1)) if re.search(r'B(\d+)', x[0]) else 0)
+        directions_list = sorted(all_directions)
+
+        # === TORQUE SECTION ===
+        torque_frame = ctk.CTkFrame(main_frame, fg_color=Theme.BG_CARD) if HAS_CTK else tk.LabelFrame(main_frame, text="Torque")
+        torque_frame.pack(fill="x", padx=5, pady=5)
+
+        torque_lbl = ctk.CTkLabel(torque_frame, text="Torques (each = separate file):",
+                                   font=ctk.CTkFont(weight="bold"),
+                                   text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Label(torque_frame, text="Torques:")
+        torque_lbl.pack(anchor="w", padx=10, pady=(10, 5))
+
+        export_torque_vars = {}
+        torque_check_frame = ctk.CTkFrame(torque_frame, fg_color="transparent") if HAS_CTK else tk.Frame(torque_frame)
+        torque_check_frame.pack(fill="x", padx=10, pady=5)
+
+        for i, t in enumerate(self.torques):
+            var = tk.BooleanVar(value=(t == self.torque_var.get()))  # Default to current selection
+            export_torque_vars[t] = var
+            cb = ctk.CTkCheckBox(torque_check_frame, text=t, variable=var,
+                                 text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Checkbutton(torque_check_frame, text=t, variable=var)
+            cb.grid(row=i // 4, column=i % 4, sticky="w", padx=5, pady=2)
+
+        # === CONDITION SECTION (Drive/Coast) ===
+        condition_frame = ctk.CTkFrame(main_frame, fg_color=Theme.BG_CARD) if HAS_CTK else tk.LabelFrame(main_frame, text="Condition")
+        condition_frame.pack(fill="x", padx=5, pady=5)
+
+        condition_lbl = ctk.CTkLabel(condition_frame, text="Conditions (each = separate file per torque):",
+                                      font=ctk.CTkFont(weight="bold"),
+                                      text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Label(condition_frame, text="Conditions:")
+        condition_lbl.pack(anchor="w", padx=10, pady=(10, 5))
+
+        export_condition_vars = {}
+        condition_check_frame = ctk.CTkFrame(condition_frame, fg_color="transparent") if HAS_CTK else tk.Frame(condition_frame)
+        condition_check_frame.pack(fill="x", padx=10, pady=5)
+
+        for i, c in enumerate(self.conditions):
+            var = tk.BooleanVar(value=(c == self.condition_var.get()))  # Default to current selection
+            export_condition_vars[c] = var
+            cb = ctk.CTkCheckBox(condition_check_frame, text=c, variable=var,
+                                 text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Checkbutton(condition_check_frame, text=c, variable=var)
+            cb.grid(row=i // 4, column=i % 4, sticky="w", padx=5, pady=2)
+
+        # === ORDER SECTION ===
+        order_frame = ctk.CTkFrame(main_frame, fg_color=Theme.BG_CARD) if HAS_CTK else tk.LabelFrame(main_frame, text="Order")
+        order_frame.pack(fill="x", padx=5, pady=5)
+
+        order_lbl = ctk.CTkLabel(order_frame, text="Orders (each = separate sheet in file):",
+                                  font=ctk.CTkFont(weight="bold"),
+                                  text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Label(order_frame, text="Orders:")
+        order_lbl.pack(anchor="w", padx=10, pady=(10, 5))
+
+        export_order_vars = {}
+        order_check_frame = ctk.CTkFrame(order_frame, fg_color="transparent") if HAS_CTK else tk.Frame(order_frame)
+        order_check_frame.pack(fill="x", padx=10, pady=5)
+
+        current_order = self.order_var.get()
+        for i, o in enumerate(self.orders):
+            var = tk.BooleanVar(value=(o == current_order or current_order == "All"))
+            export_order_vars[o] = var
+            cb = ctk.CTkCheckBox(order_check_frame, text=o, variable=var,
+                                 text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Checkbutton(order_check_frame, text=o, variable=var)
+            cb.grid(row=i // 6, column=i % 6, sticky="w", padx=5, pady=2)
 
         # === BEARINGS SECTION ===
         bearing_frame = ctk.CTkFrame(main_frame, fg_color=Theme.BG_CARD) if HAS_CTK else tk.LabelFrame(main_frame, text="Bearings")
@@ -2223,13 +3129,13 @@ class BearingForceViewer:
         bearing_check_frame = ctk.CTkFrame(bearing_frame, fg_color="transparent") if HAS_CTK else tk.Frame(bearing_frame)
         bearing_check_frame.pack(fill="x", padx=10, pady=5)
 
-        for i, b in enumerate(bearings):
-            var = tk.BooleanVar(value=True)
-            export_bearing_vars[b] = var
-            short_match = re.search(r'(B\d+)', b)
-            display_name = short_match.group(1) if short_match else b
-            cb = ctk.CTkCheckBox(bearing_check_frame, text=display_name, variable=var,
-                                 text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Checkbutton(bearing_check_frame, text=display_name, variable=var)
+        for i, (b_short, b_full) in enumerate(bearings_list):
+            # Check if this bearing is currently selected in main GUI
+            is_selected = self.bearing_vars.get(b_full, tk.BooleanVar(value=False)).get() if hasattr(self, 'bearing_vars') else True
+            var = tk.BooleanVar(value=is_selected)
+            export_bearing_vars[(b_short, b_full)] = var
+            cb = ctk.CTkCheckBox(bearing_check_frame, text=b_short, variable=var,
+                                 text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Checkbutton(bearing_check_frame, text=b_short, variable=var)
             cb.grid(row=i // 4, column=i % 4, sticky="w", padx=5, pady=2)
 
         # === DIRECTIONS SECTION ===
@@ -2245,12 +3151,14 @@ class BearingForceViewer:
         dir_check_frame = ctk.CTkFrame(dir_frame, fg_color="transparent") if HAS_CTK else tk.Frame(dir_frame)
         dir_check_frame.pack(fill="x", padx=10, pady=5)
 
-        for i, d in enumerate(directions):
-            var = tk.BooleanVar(value=True)
+        for i, d in enumerate(directions_list):
+            # Check if this direction is currently selected in main GUI
+            is_selected = self.direction_vars.get(d, tk.BooleanVar(value=False)).get() if hasattr(self, 'direction_vars') else True
+            var = tk.BooleanVar(value=is_selected)
             export_dir_vars[d] = var
             cb = ctk.CTkCheckBox(dir_check_frame, text=d, variable=var,
                                  text_color=Theme.TEXT_PRIMARY) if HAS_CTK else tk.Checkbutton(dir_check_frame, text=d, variable=var)
-            cb.grid(row=0, column=i, sticky="w", padx=10, pady=2)
+            cb.grid(row=i // 6, column=i % 6, sticky="w", padx=10, pady=2)
 
         # === DATA TYPE SECTION ===
         data_frame = ctk.CTkFrame(main_frame, fg_color=Theme.BG_CARD) if HAS_CTK else tk.LabelFrame(main_frame, text="Data")
@@ -2323,7 +3231,10 @@ class BearingForceViewer:
 
         def do_export():
             export_result['proceed'] = True
-            export_result['bearings'] = [b for b, v in export_bearing_vars.items() if v.get()]
+            export_result['torques'] = [t for t, v in export_torque_vars.items() if v.get()]
+            export_result['conditions'] = [c for c, v in export_condition_vars.items() if v.get()]
+            export_result['orders'] = [o for o, v in export_order_vars.items() if v.get()]
+            export_result['bearings'] = [(b, bf) for (b, bf), v in export_bearing_vars.items() if v.get()]
             export_result['directions'] = [d for d, v in export_dir_vars.items() if v.get()]
             export_result['magnitude'] = export_mag_var.get()
             export_result['phase'] = export_phase_var.get()
@@ -2352,6 +3263,15 @@ class BearingForceViewer:
             return
 
         # Validate selections
+        if not export_result['torques']:
+            messagebox.showwarning("No Selection", "Select at least one torque")
+            return
+        if not export_result['conditions']:
+            messagebox.showwarning("No Selection", "Select at least one condition (Drive/Coast)")
+            return
+        if not export_result['orders']:
+            messagebox.showwarning("No Selection", "Select at least one order")
+            return
         if not export_result['bearings']:
             messagebox.showwarning("No Selection", "Select at least one bearing")
             return
@@ -2362,95 +3282,251 @@ class BearingForceViewer:
             messagebox.showwarning("No Selection", "Select at least one data type")
             return
 
+        # Get output folder (for multiple files) or single file
+        sel_torques = export_result['torques']
+        sel_conditions = export_result['conditions']
+        sel_orders = export_result['orders']
+        sel_bearings = export_result['bearings']
+        sel_directions = export_result['directions']
+
+        # Calculate total files: torques × conditions
+        total_files = len(sel_torques) * len(sel_conditions)
+
+        if total_files > 1:
+            # Multiple files - ask for folder
+            output_folder = filedialog.askdirectory(title="Select Output Folder for Excel Files")
+            if not output_folder:
+                return
+        else:
+            # Single file - ask for file
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel", "*.xlsx")],
+                initialfile=f"BearingForce_{sel_torques[0]}_{sel_conditions[0]}.xlsx",
+                title="Export Data"
+            )
+            if not filepath:
+                return
+            output_folder = str(Path(filepath).parent)
+
+        # Do the export
+        try:
+            self.status_bar.set_status("Exporting... Loading CSV data on demand", Theme.ACCENT_WARNING)
+            self.root.update()
+
+            files_created = []
+            files_skipped = []
+
+            for torque in sel_torques:
+                for condition in sel_conditions:
+                    # Create filename with torque AND condition
+                    if total_files > 1:
+                        filepath = str(Path(output_folder) / f"BearingForce_{torque}_{condition}.xlsx")
+
+                    # Collect all sheets data first (to avoid empty file issue)
+                    sheets_data = {}
+
+                    for order in sel_orders:
+                        # Update status to show progress
+                        self.status_bar.set_status(f"Loading data for {torque} {condition} Order {order}...", Theme.ACCENT_WARNING)
+                        self.root.update()
+
+                        # Get data for this torque/order/condition combination (will lazy-load CSVs)
+                        filtered = self.get_data_for_export(torque, order, sel_bearings, sel_directions, candidates, condition)
+
+                        if not filtered:
+                            debug_print(f"No data for torque={torque}, condition={condition}, order={order}", "WARN")
+                            continue
+
+                        # Get frequency array
+                        freq = None
+                        for bearing_data in filtered.values():
+                            for cands in bearing_data.values():
+                                if cands:
+                                    freq = cands[0]['frequencies']
+                                    break
+                            if freq is not None:
+                                break
+
+                        if freq is None:
+                            continue
+
+                        # Build rows
+                        all_rows = []
+                        for cand_num in candidates:
+                            for freq_idx in range(len(freq)):
+                                row = {'Candidate': cand_num, 'Frequency_Hz': freq[freq_idx]}
+
+                                for b_short, b_full in sel_bearings:
+                                    bearing_data = filtered.get(b_full, {})
+
+                                    for direction in sel_directions:
+                                        cands_list = bearing_data.get(direction, [])
+                                        cand_data = None
+                                        for cd in cands_list:
+                                            if cd.get('candidate') == cand_num:
+                                                cand_data = cd
+                                                break
+
+                                        # Add selected data types
+                                        if export_result['magnitude']:
+                                            col = f'{b_short}_{direction}_Mag'
+                                            if cand_data and 'magnitude' in cand_data and freq_idx < len(cand_data['magnitude']):
+                                                val = cand_data['magnitude'][freq_idx]
+                                                if export_result['scale'] == 'log' and val > 0:
+                                                    val = 20 * np.log10(val)
+                                                row[col] = val
+                                            else:
+                                                row[col] = None
+
+                                        if export_result['phase']:
+                                            col = f'{b_short}_{direction}_Phase'
+                                            if cand_data and 'phase' in cand_data and freq_idx < len(cand_data['phase']):
+                                                row[col] = cand_data['phase'][freq_idx]
+                                            else:
+                                                row[col] = None
+
+                                        if export_result['real']:
+                                            col = f'{b_short}_{direction}_Real'
+                                            if cand_data and 'real' in cand_data and freq_idx < len(cand_data['real']):
+                                                row[col] = cand_data['real'][freq_idx]
+                                            else:
+                                                row[col] = None
+
+                                        if export_result['imaginary']:
+                                            col = f'{b_short}_{direction}_Imag'
+                                            if cand_data and 'imaginary' in cand_data and freq_idx < len(cand_data['imaginary']):
+                                                row[col] = cand_data['imaginary'][freq_idx]
+                                            else:
+                                                row[col] = None
+
+                                all_rows.append(row)
+
+                        if all_rows:
+                            sheet_name = f"Order_{order}"[:31]
+                            sheets_data[sheet_name] = pd.DataFrame(all_rows)
+
+                    # Only create file if we have at least one sheet
+                    if sheets_data:
+                        self.status_bar.set_status(f"Writing {Path(filepath).name}...", Theme.ACCENT_WARNING)
+                        self.root.update()
+
+                        with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                            for sheet_name, df in sheets_data.items():
+                                df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+                        files_created.append(filepath)
+                    else:
+                        files_skipped.append(f"{torque}_{condition}")
+                        debug_print(f"No data found for torque={torque}, condition={condition}, skipping file creation", "WARN")
+
+            if files_created:
+                scale_text = " (dB)" if export_result['scale'] == 'log' else ""
+                skip_msg = ""
+                if files_skipped:
+                    skip_msg = f"\n\nNote: {len(files_skipped)} combination(s) had no matching data: {', '.join(files_skipped)}"
+
+                if len(files_created) == 1:
+                    self.status_bar.set_status(f"✓ Exported{scale_text} to {Path(files_created[0]).name}", Theme.ACCENT_SECONDARY)
+                    messagebox.showinfo("Success", f"Exported to:\n{files_created[0]}{skip_msg}")
+                else:
+                    self.status_bar.set_status(f"✓ Exported{scale_text} {len(files_created)} files", Theme.ACCENT_SECONDARY)
+                    messagebox.showinfo("Success", f"Exported {len(files_created)} files to:\n{output_folder}{skip_msg}")
+            else:
+                msg = "No data was exported.\n\nPossible reasons:\n"
+                msg += "• Selected bearings/directions don't have data for chosen torques/conditions/orders\n"
+                msg += "• The combination doesn't exist in your CSV files\n\n"
+                msg += "Try selecting different options or check the debug log."
+                messagebox.showwarning("No Data", msg)
+
+        except Exception as e:
+            self.status_bar.set_status("Export failed", Theme.ACCENT_ERROR)
+            messagebox.showerror("Error", f"Export failed: {e}")
+
+    def export_scalar_to_excel(self):
+        """Export Scalar mode data (RMS and Peak values per frequency band) in wide format.
+
+        Output format:
+        Candidate | Bearing | Direction | Freq 0-1kHz RMS | Freq 1-3kHz RMS | ... | Freq 0-1kHz Peak | Freq 1-3kHz Peak | ...
+        """
+        filtered = self.get_filtered_data()
+        if not filtered:
+            messagebox.showwarning("No Data", "No data to export. Load data and plot first.")
+            return
+
+        try:
+            import pandas as pd
+        except ImportError:
+            messagebox.showerror("Error", "Install pandas: pip install pandas openpyxl")
+            return
+
         # Get file path
         filepath = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
             filetypes=[("Excel", "*.xlsx")],
-            title="Export Data"
+            title="Export Scalar Data (RMS & Peak)"
         )
         if not filepath:
             return
 
-        # Do the export
         try:
-            self.status_bar.set_status("Exporting...", Theme.ACCENT_WARNING)
+            self.status_bar.set_status("Exporting Scalar data...", Theme.ACCENT_WARNING)
             self.root.update()
 
-            sel_bearings = export_result['bearings']
-            sel_directions = export_result['directions']
-
-            freq = None
+            bearings = sorted(filtered.keys(),
+                             key=lambda x: int(re.search(r'B(\d+)', x).group(1)) if re.search(r'B(\d+)', x) else 0)
+            all_dirs = set()
             for bearing_data in filtered.values():
-                for cands in bearing_data.values():
-                    if cands:
-                        freq = cands[0]['frequencies']
-                        break
-                if freq is not None:
-                    break
+                all_dirs.update(bearing_data.keys())
+            directions = sorted(all_dirs)
 
-            if freq is None:
-                messagebox.showwarning("No Data", "No frequency data")
-                return
+            candidates = self.parse_candidate_selection()
+            band_labels = [b[2] for b in self.SCALAR_BANDS]
 
             all_rows = []
 
             for cand_num in candidates:
-                for freq_idx in range(len(freq)):
-                    row = {'Candidate': cand_num, 'Frequency_Hz': freq[freq_idx]}
+                for bearing_full in bearings:
+                    short_match = re.search(r'(B\d+)', bearing_full)
+                    bearing_short = short_match.group(1) if short_match else bearing_full
+                    bearing_data = filtered.get(bearing_full, {})
 
-                    for bearing_full in sel_bearings:
-                        short_match = re.search(r'(B\d+)', bearing_full)
-                        bearing_short = short_match.group(1) if short_match else bearing_full
-                        bearing_data = filtered.get(bearing_full, {})
+                    for direction in directions:
+                        cands_list = bearing_data.get(direction, [])
+                        cand_data = None
+                        for cd in cands_list:
+                            if cd.get('candidate') == cand_num:
+                                cand_data = cd
+                                break
 
-                        for direction in sel_directions:
-                            cands_list = bearing_data.get(direction, [])
-                            cand_data = None
-                            for cd in cands_list:
-                                if cd.get('candidate') == cand_num:
-                                    cand_data = cd
-                                    break
+                        if cand_data and 'frequencies' in cand_data and 'magnitude' in cand_data:
+                            scalar_vals = self.calculate_scalar_values(
+                                cand_data['frequencies'], cand_data['magnitude'])
 
-                            # Add selected data types
-                            if export_result['magnitude']:
-                                col = f'{bearing_short}_{direction}_Mag'
-                                if cand_data and 'magnitude' in cand_data and freq_idx < len(cand_data['magnitude']):
-                                    val = cand_data['magnitude'][freq_idx]
-                                    if export_result['scale'] == 'log' and val > 0:
-                                        val = 20 * np.log10(val)  # Convert to dB
-                                    row[col] = val
-                                else:
-                                    row[col] = None
+                            # Wide format: one row per Candidate/Bearing/Direction
+                            row = {
+                                'Candidate': cand_num,
+                                'Bearing': bearing_short,
+                                'Direction': direction
+                            }
 
-                            if export_result['phase']:
-                                col = f'{bearing_short}_{direction}_Phase'
-                                if cand_data and 'phase' in cand_data and freq_idx < len(cand_data['phase']):
-                                    row[col] = cand_data['phase'][freq_idx]
-                                else:
-                                    row[col] = None
+                            # Add RMS columns for each band
+                            for band_label in band_labels:
+                                col_name = f"Freq {band_label} RMS"
+                                row[col_name] = scalar_vals[band_label]['rms']
 
-                            if export_result['real']:
-                                col = f'{bearing_short}_{direction}_Real'
-                                if cand_data and 'real' in cand_data and freq_idx < len(cand_data['real']):
-                                    row[col] = cand_data['real'][freq_idx]
-                                else:
-                                    row[col] = None
+                            # Add Peak columns for each band
+                            for band_label in band_labels:
+                                col_name = f"Freq {band_label} Peak"
+                                row[col_name] = scalar_vals[band_label]['peak']
 
-                            if export_result['imaginary']:
-                                col = f'{bearing_short}_{direction}_Imag'
-                                if cand_data and 'imaginary' in cand_data and freq_idx < len(cand_data['imaginary']):
-                                    row[col] = cand_data['imaginary'][freq_idx]
-                                else:
-                                    row[col] = None
-
-                    all_rows.append(row)
+                            all_rows.append(row)
 
             df = pd.DataFrame(all_rows)
             df.to_excel(filepath, index=False)
 
-            scale_text = " (dB)" if export_result['scale'] == 'log' else ""
-            self.status_bar.set_status(f"✓ Exported{scale_text} to {Path(filepath).name}", Theme.ACCENT_SECONDARY)
-            messagebox.showinfo("Success", f"Exported to:\n{filepath}")
+            self.status_bar.set_status(f"✓ Exported Scalar data to {Path(filepath).name}", Theme.ACCENT_SECONDARY)
+            messagebox.showinfo("Success", f"Exported Scalar data (RMS & Peak) to:\n{filepath}")
 
         except Exception as e:
             self.status_bar.set_status("Export failed", Theme.ACCENT_ERROR)
