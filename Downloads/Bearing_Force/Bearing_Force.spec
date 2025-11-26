@@ -101,8 +101,15 @@ hidden_imports += collect_submodules('easyocr')
 hidden_imports += collect_submodules('torch')
 hidden_imports += collect_submodules('torchvision')
 
+# Bundle the pre-downloaded EasyOCR models (NO INTERNET REQUIRED AT RUNTIME)
+# These models are placed in 'easyocr_models' folder which the app looks for
+ocr_model_datas = [
+    ('ocr_models/craft_mlt_25k.pth', 'easyocr_models'),
+    ('ocr_models/english_g2.pth', 'easyocr_models'),
+]
+
 # Combine all data files
-all_datas = matplotlib_datas + numpy_datas + ctk_datas + easyocr_datas + torch_datas
+all_datas = matplotlib_datas + numpy_datas + ctk_datas + easyocr_datas + torch_datas + ocr_model_datas
 
 a = Analysis(
     ['Bearing_force.py'],
