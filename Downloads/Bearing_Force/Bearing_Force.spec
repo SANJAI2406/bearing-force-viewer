@@ -1,19 +1,36 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Bearing Force Viewer - PyInstaller Spec File
-# This spec ensures proper bundling of all dependencies
+# Bearing Force Viewer - PyInstaller Spec File (FULL VERSION with OCR)
+# This spec includes ALL modules including easyocr and torch
 
 import sys
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+import os
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
 
 block_cipher = None
 
-# Collect all matplotlib data files (fonts, styles, etc.)
+# Collect all data files from dependencies
 matplotlib_datas = collect_data_files('matplotlib')
-
-# Collect numpy data files
 numpy_datas = collect_data_files('numpy')
 
-# Hidden imports that PyInstaller might miss
+# Try to collect easyocr data files (OCR models)
+try:
+    easyocr_datas = collect_data_files('easyocr')
+except:
+    easyocr_datas = []
+
+# Try to collect torch data
+try:
+    torch_datas = collect_data_files('torch')
+except:
+    torch_datas = []
+
+# Try to add customtkinter data files
+try:
+    ctk_datas = collect_data_files('customtkinter')
+except:
+    ctk_datas = []
+
+# Hidden imports - include EVERYTHING
 hidden_imports = [
     # Matplotlib backends
     'matplotlib',
@@ -28,9 +45,6 @@ hidden_imports = [
     'numpy.core._methods',
     'numpy.lib.format',
     'numpy.random',
-    'numpy.random.common',
-    'numpy.random.bounded_integers',
-    'numpy.random.entropy',
 
     # Tkinter
     'tkinter',
@@ -46,29 +60,49 @@ hidden_imports = [
     'platform',
     're',
 
-    # PIL (optional but include if available)
+    # PIL
     'PIL',
     'PIL.Image',
     'PIL.ImageTk',
 
-    # CustomTkinter (optional)
+    # CustomTkinter
     'customtkinter',
 
-    # Packaging (needed by some dependencies)
+    # Packaging
     'packaging',
     'packaging.version',
     'packaging.specifiers',
     'packaging.requirements',
+
+    # EasyOCR and dependencies
+    'easyocr',
+    'easyocr.easyocr',
+    'easyocr.detection',
+    'easyocr.recognition',
+    'easyocr.utils',
+
+    # PyTorch (required by easyocr)
+    'torch',
+    'torch.nn',
+    'torch.nn.functional',
+    'torchvision',
+    'torchvision.transforms',
+
+    # Other easyocr dependencies
+    'cv2',
+    'scipy',
+    'scipy.ndimage',
+    'skimage',
+    'skimage.transform',
 ]
 
-# Try to add customtkinter data files if available
-try:
-    ctk_datas = collect_data_files('customtkinter')
-except:
-    ctk_datas = []
+# Collect all submodules for critical packages
+hidden_imports += collect_submodules('easyocr')
+hidden_imports += collect_submodules('torch')
+hidden_imports += collect_submodules('torchvision')
 
 # Combine all data files
-all_datas = matplotlib_datas + numpy_datas + ctk_datas
+all_datas = matplotlib_datas + numpy_datas + ctk_datas + easyocr_datas + torch_datas
 
 a = Analysis(
     ['Bearing_force.py'],
@@ -79,18 +113,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        # Exclude heavy optional packages to reduce size
-        'easyocr',
-        'torch',
-        'torchvision',
-        'tensorflow',
-        'scipy',
-        'pandas',
-        'IPython',
-        'jupyter',
-        'notebook',
-    ],
+    excludes=[],  # NO EXCLUSIONS - include everything
     noarchive=False,
     optimize=0,
 )
@@ -107,7 +130,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,  # Disable UPX compression - can cause PKG archive issues
+    upx=False,  # Disable UPX compression - prevents PKG archive corruption
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,  # GUI application, no console
