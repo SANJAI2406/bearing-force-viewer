@@ -1035,29 +1035,55 @@ class GraphTracker:
     
     def on_click(self, event):
         """Handle click - LEFT for info, RIGHT for source validation with highlighting"""
+        # DEBUG: Log ALL click events to console
+        print("")
+        print("[CLICK DEBUG] ========================================")
+        print(f"[CLICK DEBUG] event.button = {event.button}")
+        print(f"[CLICK DEBUG] event.inaxes = {event.inaxes}")
+        print(f"[CLICK DEBUG] event.xdata = {event.xdata}, event.ydata = {event.ydata}")
+        print(f"[CLICK DEBUG] has guiEvent = {hasattr(event, 'guiEvent')}")
+        if hasattr(event, 'guiEvent') and event.guiEvent:
+            print(f"[CLICK DEBUG] guiEvent.x_root = {getattr(event.guiEvent, 'x_root', 'N/A')}")
+            print(f"[CLICK DEBUG] guiEvent.y_root = {getattr(event.guiEvent, 'y_root', 'N/A')}")
+        print(f"[CLICK DEBUG] ========================================")
+
         if event.inaxes is None:
+            print(f"[CLICK DEBUG] EARLY EXIT: event.inaxes is None")
             self._unhighlight_curve()
             return
-        
+
         x, y = event.xdata, event.ydata
         if x is None or y is None:
+            print(f"[CLICK DEBUG] EARLY EXIT: x or y is None")
             return
-        
+
         nearest = self.find_nearest_point(event.inaxes, x, y)
-        
+        print(f"[CLICK DEBUG] nearest point found = {nearest is not None}")
+        if nearest:
+            print(f"[CLICK DEBUG] nearest label = {nearest.get('label', 'N/A')}")
+
         # RIGHT CLICK - button 3 on most systems, button 2 on some Windows configurations
         if event.button == 3:  # RIGHT CLICK - VALIDATION
+            print(f"[CLICK DEBUG] RIGHT CLICK DETECTED (button=3)")
+            print(f"[CLICK DEBUG] self.source_validator exists = {self.source_validator is not None}")
             if nearest and self.source_validator:
                 source_info = nearest.get('source_info')
                 line = nearest.get('line')
+                print(f"[CLICK DEBUG] source_info exists = {source_info is not None}")
+                print(f"[CLICK DEBUG] line exists = {line is not None}")
                 if source_info:
+                    print(f"[CLICK DEBUG] Calling _highlight_curve and _show_context_menu")
                     # HIGHLIGHT the curve so user can see which one was selected
                     self._highlight_curve(line)
                     # Show context menu
                     self._show_context_menu(event, source_info, line)
+                else:
+                    print(f"[CLICK DEBUG] source_info is None/empty - no context menu")
             else:
+                print(f"[CLICK DEBUG] No nearest point or no source_validator - unhighlighting")
                 self._unhighlight_curve()
         elif event.button == 1:  # LEFT CLICK
+            print(f"[CLICK DEBUG] LEFT CLICK DETECTED (button=1)")
             if nearest:
                 line = nearest.get('line')
                 self._highlight_curve(line)
@@ -2325,7 +2351,7 @@ class BearingForceViewer:
         for csv_file in csv_files:
             file_key = csv_file.stem  # Use filename stem as unique key
             fm = self.file_metadata.get(file_key, {})
-            all_bearings.add(fm.get('bearing_full', fm.get('bearing', 'Unknown')))
+            all_bearings.add(fm.get('bearing', 'Unknown'))  # Use bearing NUMBER only to avoid OCR duplicates
             all_directions.add(fm.get('direction', 'Unknown'))
             all_orders.add(fm.get('order', 'Unknown'))
             all_stages.add(fm.get('stage', '1'))
