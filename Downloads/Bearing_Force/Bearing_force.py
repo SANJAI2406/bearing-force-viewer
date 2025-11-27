@@ -2449,24 +2449,38 @@ class BearingForceViewer:
         torque = self.torque_var.get()
         condition = self.condition_var.get()
 
+        # DEBUG: Print filter values
+        print("")
+        print("[FILTER DEBUG] ========================================")
+        print(f"[FILTER DEBUG] order={order}, stage={stage}, torque={torque}, condition={condition}")
+
         selected_bearings = []
         for bearing_full, var in self.bearing_vars.items():
             if var.get():
                 bearing_match = re.search(r'(B\d+)', bearing_full)
                 if bearing_match:
                     selected_bearings.append((bearing_match.group(1), bearing_full))
+        print(f"[FILTER DEBUG] selected_bearings={selected_bearings}")
         if not selected_bearings:
+            print(f"[FILTER DEBUG] EARLY RETURN: no bearings selected")
             return {}
 
         selected_dirs = [d for d, v in self.direction_vars.items() if v.get()]
+        print(f"[FILTER DEBUG] selected_dirs={selected_dirs}")
         if not selected_dirs:
+            print(f"[FILTER DEBUG] EARLY RETURN: no directions selected")
             return {}
 
         candidates = self.parse_candidate_selection()
+        print(f"[FILTER DEBUG] candidates count={len(candidates) if candidates else 0}")
         if not candidates:
+            print(f"[FILTER DEBUG] EARLY RETURN: no candidates")
             return {}
 
+        print(f"[FILTER DEBUG] file_metadata count={len(self.file_metadata)}")
+        
         result = {}
+        match_count = 0
         for file_num, meta in self.file_metadata.items():
             bearing = meta.get('bearing')
             bearing_full = meta.get('bearing_full', bearing)
@@ -2475,13 +2489,32 @@ class BearingForceViewer:
 
             # Check order - "All" means match any order
             order_match = (order == "All") or (meta.get('order') == order)
+            
+            # DEBUG: Print each file's filter check
+            meta_stage = meta.get('stage')
+            meta_torque = meta.get('torque')
+            meta_cond = meta.get('condition', '')
+            meta_dir = meta.get('direction')
+            
+            stage_match = (meta_stage == stage)
+            torque_match = (meta_torque == torque)
+            cond_match = (meta_cond.lower() == condition.lower()) if meta_cond else False
+            dir_match = (meta_dir in selected_dirs)
+            
+            print(f"[FILTER DEBUG] File: {file_num[:40]}... bearing={bearing} dir={meta_dir}")
+            print(f"[FILTER DEBUG]   is_selected={is_selected}, order_match={order_match}, stage_match={stage_match}")
+            print(f"[FILTER DEBUG]   torque_match={torque_match} (meta={meta_torque} vs sel={torque})")
+            print(f"[FILTER DEBUG]   cond_match={cond_match} (meta={meta_cond} vs sel={condition})")
+            print(f"[FILTER DEBUG]   dir_match={dir_match}")
 
             if (is_selected and
                 order_match and
-                meta.get('stage') == stage and
-                meta.get('torque') == torque and
-                meta.get('condition', '').lower() == condition.lower() and
-                meta.get('direction') in selected_dirs):
+                stage_match and
+                torque_match and
+                cond_match and
+                dir_match):
+                match_count += 1
+                print(f"[FILTER DEBUG]   >>> MATCHED! <<<")
 
                 # LAZY LOADING: Load CSV data on demand if not already loaded
                 if file_num not in self.csv_data:
@@ -3298,9 +3331,15 @@ class BearingForceViewer:
 
         result = {bearing_full: {}}
 
+        # Extract short bearing name (B1, B2, etc.) for matching
+        # This handles cases where bearing_full from UI is 'B1' but metadata has 'B1 [description]'
+        bearing_short_match = re.search(r'(B\d+)', bearing_full)
+        bearing_short = bearing_short_match.group(1) if bearing_short_match else bearing_full
+
         for file_num, meta in self.file_metadata.items():
-            meta_bearing = meta.get('bearing_full', meta.get('bearing'))
-            if meta_bearing != bearing_full:
+            # Compare using short bearing names to handle OCR variations
+            meta_bearing_short = meta.get('bearing', '')
+            if meta_bearing_short != bearing_short:
                 continue
 
             order_match = (order == "All") or (meta.get('order') == order)
