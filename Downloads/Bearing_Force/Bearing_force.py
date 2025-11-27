@@ -1046,21 +1046,16 @@ class GraphTracker:
         nearest = self.find_nearest_point(event.inaxes, x, y)
         
         # RIGHT CLICK - button 3 on most systems, button 2 on some Windows configurations
-        if event.button in (2, 3):  # RIGHT CLICK - VALIDATION
-            debug_print(f"Right-click detected (button={event.button})", "INFO")
+        if event.button == 3:  # RIGHT CLICK - VALIDATION
             if nearest and self.source_validator:
                 source_info = nearest.get('source_info')
                 line = nearest.get('line')
                 if source_info:
-                    debug_print(f"Showing context menu for: {source_info.get('bearing')}-{source_info.get('direction')}", "INFO")
                     # HIGHLIGHT the curve so user can see which one was selected
                     self._highlight_curve(line)
                     # Show context menu
                     self._show_context_menu(event, source_info, line)
-                else:
-                    debug_print("No source_info for nearest curve", "WARN")
             else:
-                debug_print(f"No nearest curve found (nearest={nearest is not None}, validator={self.source_validator is not None})", "WARN")
                 self._unhighlight_curve()
         elif event.button == 1:  # LEFT CLICK
             if nearest:
@@ -1115,46 +1110,9 @@ class GraphTracker:
             command=self._unhighlight_curve
         )
         
-        # Show menu at mouse position
+        # Show menu at mouse position (original simple method)
         try:
-            canvas_widget = self.canvas.get_tk_widget()
-
-            # Get screen coordinates - try multiple methods for compatibility
-            x_screen, y_screen = None, None
-
-            # Method 1: Use winfo_pointerxy (most reliable on Windows)
-            try:
-                x_screen, y_screen = canvas_widget.winfo_pointerxy()
-                debug_print(f"Context menu position (winfo_pointerxy): {x_screen}, {y_screen}", "INFO")
-            except Exception:
-                pass
-
-            # Method 2: Use matplotlib event guiEvent
-            if x_screen is None and hasattr(event, 'guiEvent') and event.guiEvent:
-                try:
-                    x_screen = event.guiEvent.x_root
-                    y_screen = event.guiEvent.y_root
-                    debug_print(f"Context menu position (guiEvent): {x_screen}, {y_screen}", "INFO")
-                except Exception:
-                    pass
-
-            # Method 3: Calculate from canvas position + event coords
-            if x_screen is None and event.x is not None and event.y is not None:
-                x_screen = canvas_widget.winfo_rootx() + int(event.x)
-                y_screen = canvas_widget.winfo_rooty() + int(canvas_widget.winfo_height() - event.y)
-                debug_print(f"Context menu position (calculated): {x_screen}, {y_screen}", "INFO")
-
-            # Fallback: use canvas center
-            if x_screen is None:
-                x_screen = canvas_widget.winfo_rootx() + canvas_widget.winfo_width() // 2
-                y_screen = canvas_widget.winfo_rooty() + canvas_widget.winfo_height() // 2
-                debug_print(f"Context menu position (fallback center): {x_screen}, {y_screen}", "INFO")
-
-            menu.tk_popup(x_screen, y_screen)
-        except Exception as e:
-            debug_print(f"Context menu error: {e}", "ERROR")
-            import traceback
-            debug_print(f"Traceback: {traceback.format_exc()}", "ERROR")
+            menu.tk_popup(event.guiEvent.x_root, event.guiEvent.y_root)
         finally:
             menu.grab_release()
     
@@ -1776,7 +1734,7 @@ class BearingForceViewer:
         original_size = img.size
 
         # Step 1: Scale up 3x (increased from 2x) - makes letters more distinct
-        scale_factor = 3
+        scale_factor = 2
         new_width = img.width * scale_factor
         new_height = img.height * scale_factor
         img = img.resize((new_width, new_height), Image.LANCZOS)
@@ -1793,7 +1751,7 @@ class BearingForceViewer:
 
         # Step 4: Increase contrast (makes text edges sharper)
         enhancer_contrast = ImageEnhance.Contrast(img)
-        img = enhancer_contrast.enhance(2.5)  # 2.5x contrast boost (increased from 2x)
+        img = enhancer_contrast.enhance(2.0)  # 2.5x contrast boost (increased from 2x)
         debug_print(f"    Contrast enhanced (2.5x)", "OCR")
 
         # Step 5: Optional - apply unsharp mask for additional clarity
@@ -1821,10 +1779,10 @@ class BearingForceViewer:
             debug_print(f"  Image size: {width}x{height}", "OCR")
 
             # Step 1: Crop top 35% (increased from 25% to capture more title area)
-            crop_percentage = 0.35  # 35% - increased for better OCR detection
+            crop_percentage = 0.25  # 35% - increased for better OCR detection
             crop_height = int(height * crop_percentage)
             title_area = img.crop((0, 0, width, crop_height))
-            debug_print(f"  Crop area: top 35% = {crop_height} pixels", "OCR")
+            debug_print(f"  Crop area: top 25% = {crop_height} pixels", "OCR")
 
             # Step 2: Apply image preprocessing (scale 2x, grayscale, contrast)
             debug_print(f"  Preprocessing image for OCR...", "OCR")
@@ -1878,80 +1836,38 @@ class BearingForceViewer:
             else:
                 debug_print("    NO BEARING found. Check if text contains B1, B2, etc.", "WARN")
 
-        # Try direction: X Component, Y Component, Z Component
-        # OCR just extracts X/Y/Z - the filename determines Force vs Moment
-        # Common OCR misreads: Y -> V, Y -> y (lowercase)
-
+        # Direction detection: X/Y/Z Component
+        # Also handle common OCR misreads: V->Y, 2->Z, 7->Z
         direction_found = None
-
-        # Pattern 1: Standard "X/Y/Z Component"
+        
+        # Pattern 1: Standard "X/Y/Z Component" (most common)
         direction_match = re.search(r'(X|Y|Z)\s*Component', text, re.IGNORECASE)
         if direction_match:
             direction_found = direction_match.group(1).upper()
-            debug_print(f"    DIRECTION (pattern 1): {direction_found}", "OCR")
-
-        # Pattern 2: OCR misreads Y as V - "V Component"
+        
+        # Pattern 2: OCR misreads Y as V
         if not direction_found:
             v_match = re.search(r'V\s*Component', text, re.IGNORECASE)
             if v_match:
-                direction_found = 'Y'  # V is likely misread Y
-                debug_print(f"    DIRECTION (V->Y): Y (OCR misread V as Y)", "OCR")
-
-        # Pattern 2b: OCR misreads Z as 2 or 7 - "2 Component" or "7 Component" or "Force 2"
-        # From debug logs: 'Force 2 Component' is common OCR misread of 'Force Z Component'
+                direction_found = 'Y'
+        
+        # Pattern 3: OCR misreads Z as 2 or 7
         if not direction_found:
-            # Match "2 Component", "7 Component", "Force 2", "Force 7"
-            z_misread = re.search(r'(?:Force\s*[-_]?\s*)?[27]\s*Component|Force\s+[27]\s', text, re.IGNORECASE)
+            z_misread = re.search(r'[27]\s*Component', text, re.IGNORECASE)
             if z_misread:
-                direction_found = 'Z'  # 2 or 7 is likely misread Z
-                debug_print(f"    DIRECTION (2/7->Z): Z (OCR misread 2 or 7 as Z)", "OCR")
-
-        # Pattern 3: Force/Moment - X/Y/Z pattern
+                direction_found = 'Z'
+        
+        # Pattern 4: "Force X" or "Force Y" or "Force Z" (alternate format)
         if not direction_found:
-            alt_match = re.search(r'(?:Force|Moment)\s*[-_]?\s*(X|Y|Z|V)', text, re.IGNORECASE)
-            if alt_match:
-                d = alt_match.group(1).upper()
-                direction_found = 'Y' if d == 'V' else d
-                debug_print(f"    DIRECTION (pattern 3): {direction_found}", "OCR")
-
-        # Pattern 4: "- X ", "- Y ", "- Z " with dashes (common in titles)
-        if not direction_found:
-            dash_match = re.search(r'-\s*(X|Y|Z|V)\s+', text, re.IGNORECASE)
-            if dash_match:
-                d = dash_match.group(1).upper()
-                direction_found = 'Y' if d == 'V' else d
-                debug_print(f"    DIRECTION (dash pattern): {direction_found}", "OCR")
-
-        # Pattern 5: Look for standalone X/Y/Z/V near "Component" (broader search)
-        if not direction_found:
-            # Search for any X, Y, Z, or V followed by anything that looks like "Component"
-            comp_match = re.search(r'(X|Y|Z|V)\s*[Cc][o0][mn][p]', text, re.IGNORECASE)
-            if comp_match:
-                d = comp_match.group(1).upper()
-                direction_found = 'Y' if d == 'V' else d
-                debug_print(f"    DIRECTION (fuzzy component): {direction_found}", "OCR")
-
-        # Pattern 6: Look for "Force X", "Force Y", "Force Z" pattern (sometimes Y is right after Force)
-        if not direction_found:
-            force_dir_match = re.search(r'Force\s+(X|Y|Z|V)\s', text, re.IGNORECASE)
-            if force_dir_match:
-                d = force_dir_match.group(1).upper()
-                direction_found = 'Y' if d == 'V' else d
-                debug_print(f"    DIRECTION (Force X/Y/Z): {direction_found}", "OCR")
-
-        # Pattern 7: Look for standalone X/Y/Z between "Force" and "Order" (widest search)
-        if not direction_found:
-            # Sometimes "Y" appears somewhere in "Force ... Y ... Order"
-            wide_match = re.search(r'Force.*?\s(X|Y|Z|V)\s.*?Order', text, re.IGNORECASE)
-            if wide_match:
-                d = wide_match.group(1).upper()
-                direction_found = 'Y' if d == 'V' else d
-                debug_print(f"    DIRECTION (wide search Force..X/Y/Z..Order): {direction_found}", "OCR")
-
+            force_match = re.search(r'Force\s+(X|Y|Z)', text, re.IGNORECASE)
+            if force_match:
+                direction_found = force_match.group(1).upper()
+        
         if direction_found:
             result['direction'] = direction_found
+            debug_print(f"    DIRECTION: {direction_found}", "OCR")
         else:
-            debug_print(f"    NO DIRECTION found. Text was: '{text[:100]}...'", "WARN")
+            debug_print(f"    NO DIRECTION found in: '{text[:80]}...'", "WARN")
 
         # Try order: Order 52.0, Order 26.0, Order 78.0, etc
         # OCR may read "Order 52" with space/period between digits, e.g. "Order 5 2" or "Order 5.2"
