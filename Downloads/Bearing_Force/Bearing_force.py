@@ -1045,16 +1045,22 @@ class GraphTracker:
         
         nearest = self.find_nearest_point(event.inaxes, x, y)
         
-        if event.button == 3:  # RIGHT CLICK - VALIDATION
+        # RIGHT CLICK - button 3 on most systems, button 2 on some Windows configurations
+        if event.button in (2, 3):  # RIGHT CLICK - VALIDATION
+            debug_print(f"Right-click detected (button={event.button})", "INFO")
             if nearest and self.source_validator:
                 source_info = nearest.get('source_info')
                 line = nearest.get('line')
                 if source_info:
+                    debug_print(f"Showing context menu for: {source_info.get('bearing')}-{source_info.get('direction')}", "INFO")
                     # HIGHLIGHT the curve so user can see which one was selected
                     self._highlight_curve(line)
                     # Show context menu
                     self._show_context_menu(event, source_info, line)
+                else:
+                    debug_print("No source_info for nearest curve", "WARN")
             else:
+                debug_print(f"No nearest curve found (nearest={nearest is not None}, validator={self.source_validator is not None})", "WARN")
                 self._unhighlight_curve()
         elif event.button == 1:  # LEFT CLICK
             if nearest:
@@ -1111,18 +1117,44 @@ class GraphTracker:
         
         # Show menu at mouse position
         try:
-            # Get screen coordinates - handle both matplotlib event and fallback
-            if hasattr(event, 'guiEvent') and event.guiEvent:
-                x_screen = event.guiEvent.x_root
-                y_screen = event.guiEvent.y_root
-            else:
-                # Fallback: calculate from canvas widget position
-                canvas_widget = self.canvas.get_tk_widget()
-                x_screen = canvas_widget.winfo_rootx() + int(event.x) if event.x else 0
-                y_screen = canvas_widget.winfo_rooty() + int(canvas_widget.winfo_height() - event.y) if event.y else 0
+            canvas_widget = self.canvas.get_tk_widget()
+
+            # Get screen coordinates - try multiple methods for compatibility
+            x_screen, y_screen = None, None
+
+            # Method 1: Use winfo_pointerxy (most reliable on Windows)
+            try:
+                x_screen, y_screen = canvas_widget.winfo_pointerxy()
+                debug_print(f"Context menu position (winfo_pointerxy): {x_screen}, {y_screen}", "INFO")
+            except Exception:
+                pass
+
+            # Method 2: Use matplotlib event guiEvent
+            if x_screen is None and hasattr(event, 'guiEvent') and event.guiEvent:
+                try:
+                    x_screen = event.guiEvent.x_root
+                    y_screen = event.guiEvent.y_root
+                    debug_print(f"Context menu position (guiEvent): {x_screen}, {y_screen}", "INFO")
+                except Exception:
+                    pass
+
+            # Method 3: Calculate from canvas position + event coords
+            if x_screen is None and event.x is not None and event.y is not None:
+                x_screen = canvas_widget.winfo_rootx() + int(event.x)
+                y_screen = canvas_widget.winfo_rooty() + int(canvas_widget.winfo_height() - event.y)
+                debug_print(f"Context menu position (calculated): {x_screen}, {y_screen}", "INFO")
+
+            # Fallback: use canvas center
+            if x_screen is None:
+                x_screen = canvas_widget.winfo_rootx() + canvas_widget.winfo_width() // 2
+                y_screen = canvas_widget.winfo_rooty() + canvas_widget.winfo_height() // 2
+                debug_print(f"Context menu position (fallback center): {x_screen}, {y_screen}", "INFO")
+
             menu.tk_popup(x_screen, y_screen)
         except Exception as e:
             debug_print(f"Context menu error: {e}", "ERROR")
+            import traceback
+            debug_print(f"Traceback: {traceback.format_exc()}", "ERROR")
         finally:
             menu.grab_release()
     
@@ -1733,33 +1765,43 @@ class BearingForceViewer:
     
     def preprocess_image_for_ocr(self, img):
         """
-        Preprocess image for better OCR accuracy (Gemini's suggestion):
-        1. Scale up 2x (makes Y and Z distinct from V)
+        Preprocess image for better OCR accuracy (enhanced version):
+        1. Scale up 3x (makes Y, Z, 2, 7 more distinct)
         2. Convert to grayscale (removes color confusion)
-        3. Increase contrast (makes text pop)
+        3. Increase sharpness (makes letter edges clearer)
+        4. Increase contrast (makes text pop)
         """
-        from PIL import ImageEnhance, ImageOps
+        from PIL import ImageEnhance, ImageOps, ImageFilter
 
         original_size = img.size
 
-        # Step 1: Scale up 2x - makes small letters like Y more distinct
-        new_width = img.width * 2
-        new_height = img.height * 2
+        # Step 1: Scale up 3x (increased from 2x) - makes letters more distinct
+        scale_factor = 3
+        new_width = img.width * scale_factor
+        new_height = img.height * scale_factor
         img = img.resize((new_width, new_height), Image.LANCZOS)
-        debug_print(f"    Scaled: {original_size} -> {img.size}", "OCR")
+        debug_print(f"    Scaled: {original_size} -> {img.size} ({scale_factor}x)", "OCR")
 
         # Step 2: Convert to grayscale (removes color noise from graph elements)
         img = img.convert('L')  # 'L' = grayscale
         debug_print(f"    Converted to grayscale", "OCR")
 
-        # Step 3: Increase contrast (makes text edges sharper)
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2.0)  # 2x contrast boost
-        debug_print(f"    Contrast enhanced (2x)", "OCR")
+        # Step 3: Sharpen the image (helps distinguish Z from 2, Y from V)
+        enhancer_sharp = ImageEnhance.Sharpness(img)
+        img = enhancer_sharp.enhance(2.0)  # 2x sharpness boost
+        debug_print(f"    Sharpness enhanced (2x)", "OCR")
 
-        # Step 4: Optional - convert to pure black and white (threshold)
-        # This can help but may lose some detail, so we keep grayscale
-        # img = img.point(lambda x: 0 if x < 128 else 255, '1')
+        # Step 4: Increase contrast (makes text edges sharper)
+        enhancer_contrast = ImageEnhance.Contrast(img)
+        img = enhancer_contrast.enhance(2.5)  # 2.5x contrast boost (increased from 2x)
+        debug_print(f"    Contrast enhanced (2.5x)", "OCR")
+
+        # Step 5: Optional - apply unsharp mask for additional clarity
+        try:
+            img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=2))
+            debug_print(f"    Unsharp mask applied", "OCR")
+        except Exception:
+            pass  # UnsharpMask not available in older PIL versions
 
         return img
 
@@ -1778,11 +1820,11 @@ class BearingForceViewer:
             width, height = img.size
             debug_print(f"  Image size: {width}x{height}", "OCR")
 
-            # Step 1: Crop top 25% (safe margin to capture all title text)
-            crop_percentage = 0.25  # 25% - safe margin as per Gemini's suggestion
+            # Step 1: Crop top 35% (increased from 25% to capture more title area)
+            crop_percentage = 0.35  # 35% - increased for better OCR detection
             crop_height = int(height * crop_percentage)
             title_area = img.crop((0, 0, width, crop_height))
-            debug_print(f"  Crop area: top 25% = {crop_height} pixels", "OCR")
+            debug_print(f"  Crop area: top 35% = {crop_height} pixels", "OCR")
 
             # Step 2: Apply image preprocessing (scale 2x, grayscale, contrast)
             debug_print(f"  Preprocessing image for OCR...", "OCR")
@@ -1855,9 +1897,11 @@ class BearingForceViewer:
                 direction_found = 'Y'  # V is likely misread Y
                 debug_print(f"    DIRECTION (V->Y): Y (OCR misread V as Y)", "OCR")
 
-        # Pattern 2b: OCR misreads Z as 2 or 7 - "2 Component" or "7 Component"
+        # Pattern 2b: OCR misreads Z as 2 or 7 - "2 Component" or "7 Component" or "Force 2"
+        # From debug logs: 'Force 2 Component' is common OCR misread of 'Force Z Component'
         if not direction_found:
-            z_misread = re.search(r'[27]s*Component', text, re.IGNORECASE)
+            # Match "2 Component", "7 Component", "Force 2", "Force 7"
+            z_misread = re.search(r'(?:Force\s*[-_]?\s*)?[27]\s*Component|Force\s+[27]\s', text, re.IGNORECASE)
             if z_misread:
                 direction_found = 'Z'  # 2 or 7 is likely misread Z
                 debug_print(f"    DIRECTION (2/7->Z): Z (OCR misread 2 or 7 as Z)", "OCR")
